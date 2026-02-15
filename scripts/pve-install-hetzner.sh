@@ -234,8 +234,14 @@ get_inputs_interactive() {
     NET_SOURCE="from-dhcp"
 
     # Password
-    while [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; do
+    while true; do
         read -s -p "Root password: " NEW_ROOT_PASSWORD < "${TTY_INPUT:-/dev/stdin}" || true; echo ""
+        if [[ -z "$NEW_ROOT_PASSWORD" ]]; then log_warn "Password cannot be empty"; continue; fi
+        if [[ ${#NEW_ROOT_PASSWORD} -lt 5 ]]; then log_warn "Minimum 5 characters"; NEW_ROOT_PASSWORD=""; continue; fi
+        local confirm_pw=""
+        read -s -p "Confirm password: " confirm_pw < "${TTY_INPUT:-/dev/stdin}" || true; echo ""
+        if [[ "$NEW_ROOT_PASSWORD" != "$confirm_pw" ]]; then log_warn "Passwords do not match"; NEW_ROOT_PASSWORD=""; continue; fi
+        break
     done
 }
 
@@ -279,9 +285,27 @@ get_inputs_from_toml() {
     # Prompt for password if empty (even in non-interactive)
     if ! $DRY_RUN && [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; then
         if [[ -n "$TTY_INPUT" ]]; then
-            while [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; do
+            while true; do
                 read -s -p "Root password (not in config — enter now): " NEW_ROOT_PASSWORD < "$TTY_INPUT" || true
                 echo ""
+                if [[ -z "$NEW_ROOT_PASSWORD" ]]; then
+                    log_warn "Password cannot be empty"
+                    continue
+                fi
+                if [[ ${#NEW_ROOT_PASSWORD} -lt 5 ]]; then
+                    log_warn "Password must be at least 5 characters (Proxmox requirement)"
+                    NEW_ROOT_PASSWORD=""
+                    continue
+                fi
+                local confirm_pw=""
+                read -s -p "Confirm password: " confirm_pw < "$TTY_INPUT" || true
+                echo ""
+                if [[ "$NEW_ROOT_PASSWORD" != "$confirm_pw" ]]; then
+                    log_warn "Passwords do not match — try again"
+                    NEW_ROOT_PASSWORD=""
+                    continue
+                fi
+                break
             done
         else
             die "Root password required but no terminal available for interactive prompt. Set root_password in config TOML."
