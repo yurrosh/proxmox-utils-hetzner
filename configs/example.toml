@@ -21,6 +21,10 @@ search_domain = "example.com"
 [disk]
 filesystem = "zfs"
 zfs_raid = "raid1"
+# Physical disk paths as seen from Hetzner rescue system.
+# These are passed to QEMU as -drive arguments. Inside QEMU, the Proxmox
+# installer sees them as /dev/vda, /dev/vdb (virtio) — the name mapping
+# is handled automatically (disk-list is omitted from answer.toml).
 disk_list = ["/dev/nvme0n1", "/dev/nvme1n1"]
 
 [users]

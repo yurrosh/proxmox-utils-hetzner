@@ -13,7 +13,7 @@
 # Run from Hetzner Rescue System (Linux 64-bit)
 # Repo: https://github.com/yurrosh/proxmox-utils-hetzner
 
-set -e
+set -euo pipefail
 cd /root
 
 # ---- Colors ----
@@ -21,10 +21,19 @@ CLR_RED="\033[1;31m"
 CLR_GREEN="\033[1;32m"
 CLR_YELLOW="\033[1;33m"
 CLR_BLUE="\033[1;34m"
+CLR_CYAN="\033[1;36m"
 CLR_RESET="\033[m"
 
+log_info()  { echo -e "${CLR_BLUE}[INFO]  $*${CLR_RESET}"; }
+log_ok()    { echo -e "${CLR_GREEN}[OK]    $*${CLR_RESET}"; }
+log_warn()  { echo -e "${CLR_YELLOW}[WARN]  $*${CLR_RESET}"; }
+log_err()   { echo -e "${CLR_RED}[ERROR] $*${CLR_RESET}"; }
+log_step()  { echo -e "\n${CLR_CYAN}═══ $* ═══${CLR_RESET}"; }
+
+die() { log_err "$@"; exit 1; }
+
 # ---- Ensure root ----
-[[ $EUID -ne 0 ]] && { echo -e "${CLR_RED}Must run as root${CLR_RESET}"; exit 1; }
+[[ $EUID -ne 0 ]] && die "Must run as root"
 
 # ---- Parse arguments ----
 CONFIG_FILE=""
@@ -49,16 +58,15 @@ while [[ $# -gt 0 ]]; do
             echo "Curl one-liner:"
             echo "  bash <(curl -sSL https://github.com/yurrosh/proxmox-utils-hetzner/raw/main/scripts/pve-install-hetzner.sh)"
             exit 0 ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
+        *) die "Unknown option: $1" ;;
     esac
 done
 
 # Download remote config if --config-url given
 if [[ -n "$CONFIG_URL" ]]; then
-    echo -e "${CLR_BLUE}Downloading config: ${CONFIG_URL}${CLR_RESET}"
-    curl -sSfL -o /tmp/pve-config-remote.toml "$CONFIG_URL" || {
-        echo -e "${CLR_RED}Failed to download config from ${CONFIG_URL}${CLR_RESET}"; exit 1;
-    }
+    log_info "Downloading config: ${CONFIG_URL}"
+    curl -sSfL -o /tmp/pve-config-remote.toml "$CONFIG_URL" || \
+        die "Failed to download config from ${CONFIG_URL}"
     CONFIG_FILE="/tmp/pve-config-remote.toml"
 fi
 
@@ -101,7 +109,11 @@ parse_toml_array() {
 # DETECT HARDWARE
 # ============================================================
 detect_hardware() {
-    echo -e "${CLR_BLUE}Detecting hardware...${CLR_RESET}"
+    log_step "Detecting hardware"
+
+    # UEFI detection
+    BOOT_MODE="bios"
+    [[ -d /sys/firmware/efi ]] && BOOT_MODE="uefi"
 
     # Default interface
     DEFAULT_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
@@ -114,28 +126,33 @@ detect_hardware() {
     AVAILABLE_INTERFACES=$(ip -d link show | grep -v "lo:" | grep -E '(^[0-9]+:|altname)' | \
         awk '/^[0-9]+:/ {iface=$2; gsub(/:/, "", iface); printf "%s", iface} /altname/ {printf ",%s", $2} END {print ""}' | sed 's/,$//')
 
-    # Network from selected interface
-    detect_network_for_interface() {
-        local iface="$1"
-        MAIN_IPV4_CIDR=$(ip address show "$iface" 2>/dev/null | grep global | grep "inet " | xargs | cut -d" " -f2)
-        MAIN_IPV4=$(echo "$MAIN_IPV4_CIDR" | cut -d'/' -f1)
-        MAIN_IPV4_GW=$(ip route | grep default | xargs | cut -d" " -f3)
-        MAC_ADDRESS=$(ip link show "$iface" | awk '/ether/ {print $2}')
-        IPV6_CIDR=$(ip address show "$iface" 2>/dev/null | grep global | grep "inet6 " | xargs | cut -d" " -f2)
-        MAIN_IPV6=$(echo "$IPV6_CIDR" | cut -d'/' -f1)
-        if [ -n "$IPV6_CIDR" ]; then
-            FIRST_IPV6_CIDR="$(echo "$IPV6_CIDR" | cut -d'/' -f1 | cut -d':' -f1-4):1::1/80"
-        else
-            FIRST_IPV6_CIDR=""
-        fi
-    }
-
     # Detect disks
     DETECTED_DISKS=$(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}' | grep -E "nvme|sd" | sort)
     DISK_COUNT=$(echo "$DETECTED_DISKS" | wc -l)
 
-    echo -e "  Interface: ${DEFAULT_INTERFACE} (available: ${AVAILABLE_INTERFACES})"
-    echo -e "  Disks: ${DISK_COUNT} found: $(echo $DETECTED_DISKS | tr '\n' ' ')"
+    # Detect rescue system codename (for APT repos)
+    RESCUE_CODENAME=$(lsb_release -cs 2>/dev/null || cat /etc/os-release 2>/dev/null | grep VERSION_CODENAME | cut -d= -f2 || echo "bookworm")
+
+    echo "  Boot mode:  ${BOOT_MODE}"
+    echo "  Interface:  ${DEFAULT_INTERFACE} (available: ${AVAILABLE_INTERFACES})"
+    echo "  Disks:      ${DISK_COUNT} found: $(echo $DETECTED_DISKS | tr '\n' ' ')"
+    echo "  Rescue OS:  ${RESCUE_CODENAME}"
+}
+
+# Network from selected interface
+detect_network_for_interface() {
+    local iface="$1"
+    MAIN_IPV4_CIDR=$(ip address show "$iface" 2>/dev/null | grep global | grep "inet " | xargs | cut -d" " -f2)
+    MAIN_IPV4=$(echo "$MAIN_IPV4_CIDR" | cut -d'/' -f1)
+    MAIN_IPV4_GW=$(ip route | grep default | xargs | cut -d" " -f3)
+    MAC_ADDRESS=$(ip link show "$iface" | awk '/ether/ {print $2}')
+    IPV6_CIDR=$(ip address show "$iface" 2>/dev/null | grep global | grep "inet6 " | xargs | cut -d" " -f2)
+    MAIN_IPV6=$(echo "$IPV6_CIDR" | cut -d'/' -f1)
+    if [ -n "$IPV6_CIDR" ]; then
+        FIRST_IPV6_CIDR="$(echo "$IPV6_CIDR" | cut -d'/' -f1 | cut -d':' -f1-4):1::1/80"
+    else
+        FIRST_IPV6_CIDR=""
+    fi
 }
 
 # ============================================================
@@ -149,9 +166,10 @@ get_inputs() {
     fi
 
     # Validate
-    [[ -z "$HOSTNAME" ]] && { echo -e "${CLR_RED}Hostname required${CLR_RESET}"; exit 1; }
-    [[ -z "$FQDN" ]] && { echo -e "${CLR_RED}FQDN required${CLR_RESET}"; exit 1; }
-    [[ -z "$NEW_ROOT_PASSWORD" ]] && { echo -e "${CLR_RED}Root password required${CLR_RESET}"; exit 1; }
+    [[ -z "$HOSTNAME" ]] && die "Hostname required"
+    [[ -z "$FQDN" ]] && die "FQDN required"
+    [[ -z "$NEW_ROOT_PASSWORD" ]] && die "Root password required"
+    [[ ${#NEW_ROOT_PASSWORD} -lt 5 ]] && die "Root password must be at least 5 characters (Proxmox requirement)"
 }
 
 get_inputs_interactive() {
@@ -186,8 +204,8 @@ get_inputs_interactive() {
 }
 
 get_inputs_from_toml() {
-    echo -e "${CLR_BLUE}Reading config: ${CONFIG_FILE}${CLR_RESET}"
-    [[ ! -f "$CONFIG_FILE" ]] && { echo -e "${CLR_RED}Config not found: $CONFIG_FILE${CLR_RESET}"; exit 1; }
+    log_info "Reading config: ${CONFIG_FILE}"
+    [[ ! -f "$CONFIG_FILE" ]] && die "Config not found: $CONFIG_FILE"
 
     HOSTNAME=$(parse_toml "$CONFIG_FILE" server hostname "")
     FQDN=$(parse_toml "$CONFIG_FILE" server fqdn "")
@@ -219,25 +237,165 @@ get_inputs_from_toml() {
         read -s -p "Root password (not in config — enter now): " NEW_ROOT_PASSWORD; echo ""
     done
 
-    echo -e "  Hostname:  ${HOSTNAME}"
-    echo -e "  FQDN:      ${FQDN}"
-    echo -e "  Interface: ${INTERFACE_NAME}"
-    echo -e "  IPv4:      ${MAIN_IPV4_CIDR}"
-    echo -e "  Gateway:   ${MAIN_IPV4_GW}"
-    echo -e "  Disks:     ${DISK1}, ${DISK2}"
-    echo -e "  ZFS RAID:  ${ZFS_RAID}"
+    echo "  Hostname:  ${HOSTNAME}"
+    echo "  FQDN:      ${FQDN}"
+    echo "  Interface: ${INTERFACE_NAME}"
+    echo "  IPv4:      ${MAIN_IPV4_CIDR}"
+    echo "  Gateway:   ${MAIN_IPV4_GW}"
+    echo "  Disks:     ${DISK1}, ${DISK2}"
+    echo "  ZFS RAID:  ${ZFS_RAID}"
+}
+
+# ============================================================
+# PRE-FLIGHT VALIDATION
+# ============================================================
+preflight_checks() {
+    log_step "Pre-flight validation"
+    local errors=0
+
+    # Check we're in rescue system (not already in Proxmox)
+    if command -v pveversion &>/dev/null; then
+        log_warn "pveversion found — are you sure you're in rescue mode?"
+    fi
+
+    # Check disks exist
+    if [[ ! -b "$DISK1" ]]; then
+        log_err "Disk 1 not found: $DISK1"
+        errors=$((errors + 1))
+    else
+        local size1
+        size1=$(lsblk -bno SIZE "$DISK1" 2>/dev/null | head -1)
+        log_ok "Disk 1: $DISK1 ($(( size1 / 1024 / 1024 / 1024 )) GB)"
+    fi
+
+    if [[ ! -b "$DISK2" ]]; then
+        log_err "Disk 2 not found: $DISK2"
+        errors=$((errors + 1))
+    else
+        local size2
+        size2=$(lsblk -bno SIZE "$DISK2" 2>/dev/null | head -1)
+        log_ok "Disk 2: $DISK2 ($(( size2 / 1024 / 1024 / 1024 )) GB)"
+    fi
+
+    # Check network interface
+    if ! ip link show "$INTERFACE_NAME" &>/dev/null; then
+        log_err "Network interface not found: $INTERFACE_NAME"
+        errors=$((errors + 1))
+    else
+        log_ok "Interface: $INTERFACE_NAME (IPv4: $MAIN_IPV4_CIDR)"
+    fi
+
+    # Check UEFI + OVMF availability
+    if [[ "$BOOT_MODE" == "uefi" ]]; then
+        log_info "UEFI boot detected — will use OVMF firmware with persistent NVRAM"
+        # OVMF files will be checked after package install (in prepare_packages)
+    else
+        log_info "Legacy BIOS boot detected"
+    fi
+
+    # Check KVM support
+    if [[ ! -e /dev/kvm ]]; then
+        log_err "KVM not available (/dev/kvm missing) — cannot run QEMU with -enable-kvm"
+        errors=$((errors + 1))
+    else
+        log_ok "KVM available"
+    fi
+
+    # Check RAM (need at least 4GB for QEMU)
+    local total_ram_mb
+    total_ram_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+    if [[ $total_ram_mb -lt 4096 ]]; then
+        log_warn "Only ${total_ram_mb}MB RAM — QEMU needs 4GB, may fail"
+    else
+        log_ok "RAM: ${total_ram_mb}MB available"
+    fi
+
+    [[ $errors -gt 0 ]] && die "Pre-flight failed with $errors error(s)"
+    log_ok "All pre-flight checks passed"
 }
 
 # ============================================================
 # PREPARE
 # ============================================================
 prepare_packages() {
-    echo -e "${CLR_BLUE}Installing packages...${CLR_RESET}"
-    echo "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription" | tee /etc/apt/sources.list.d/pve.list >/dev/null
-    curl -so /etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg \
-        https://enterprise.proxmox.com/debian/proxmox-release-bookworm.gpg
+    log_step "Installing packages"
+
+    # Auto-detect codename for Proxmox APT repo
+    # Hetzner rescue systems are typically Debian bookworm or trixie
+    local codename="$RESCUE_CODENAME"
+    # Proxmox repo only has bookworm and trixie; fall back to bookworm
+    case "$codename" in
+        bookworm|trixie) ;;
+        *) codename="bookworm"; log_warn "Unknown codename '$RESCUE_CODENAME', using bookworm" ;;
+    esac
+
+    echo "deb http://download.proxmox.com/debian/pve ${codename} pve-no-subscription" \
+        | tee /etc/apt/sources.list.d/pve.list >/dev/null
+    curl -so /etc/apt/trusted.gpg.d/proxmox-release-${codename}.gpg \
+        "https://enterprise.proxmox.com/debian/proxmox-release-${codename}.gpg"
     apt clean && apt update -qq && apt install -yq proxmox-auto-install-assistant xorriso ovmf wget sshpass
-    echo -e "${CLR_GREEN}Packages ready${CLR_RESET}"
+
+    # Verify OVMF files for UEFI mode
+    if [[ "$BOOT_MODE" == "uefi" ]]; then
+        locate_ovmf_firmware
+    fi
+
+    log_ok "Packages ready"
+}
+
+# Locate OVMF firmware files — we need split CODE+VARS for persistent NVRAM
+locate_ovmf_firmware() {
+    # Prefer 4M variant (modern, supports Secure Boot vars), fall back to legacy
+    if [[ -f /usr/share/OVMF/OVMF_CODE_4M.fd ]]; then
+        OVMF_CODE="/usr/share/OVMF/OVMF_CODE_4M.fd"
+        OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS_4M.fd"
+    elif [[ -f /usr/share/OVMF/OVMF_CODE.fd ]]; then
+        OVMF_CODE="/usr/share/OVMF/OVMF_CODE.fd"
+        OVMF_VARS_TEMPLATE="/usr/share/OVMF/OVMF_VARS.fd"
+    elif [[ -f /usr/share/ovmf/OVMF.fd ]]; then
+        # Fallback: combined firmware (no persistent NVRAM — less safe)
+        OVMF_CODE=""
+        OVMF_VARS_TEMPLATE=""
+        log_warn "Only combined OVMF.fd found — UEFI NVRAM will NOT persist between steps"
+        log_warn "Boot may rely on fallback EFI path (\\EFI\\BOOT\\BOOTX64.EFI)"
+        return
+    else
+        die "UEFI mode but no OVMF firmware found. Install: apt install ovmf"
+    fi
+
+    if [[ ! -f "$OVMF_VARS_TEMPLATE" ]]; then
+        die "OVMF_VARS template not found: $OVMF_VARS_TEMPLATE"
+    fi
+
+    log_ok "OVMF firmware: $OVMF_CODE"
+    log_ok "OVMF VARS template: $OVMF_VARS_TEMPLATE"
+}
+
+# Build QEMU UEFI arguments — with writable NVRAM copy
+# The NVRAM file persists between install_proxmox and boot_and_configure
+OVMF_NVRAM_COPY="/root/ovmf-vars-session.fd"
+
+build_uefi_args() {
+    if [[ "$BOOT_MODE" != "uefi" ]]; then
+        echo ""
+        return
+    fi
+
+    if [[ -n "${OVMF_CODE:-}" && -n "${OVMF_VARS_TEMPLATE:-}" ]]; then
+        # Split firmware: CODE (readonly) + VARS (writable copy)
+        # Copy VARS template only if we don't already have a session copy
+        # (install step creates it, configure step reuses it)
+        if [[ ! -f "$OVMF_NVRAM_COPY" ]]; then
+            cp "$OVMF_VARS_TEMPLATE" "$OVMF_NVRAM_COPY"
+            log_info "Created writable NVRAM: $OVMF_NVRAM_COPY"
+        else
+            log_info "Reusing NVRAM from install step: $OVMF_NVRAM_COPY"
+        fi
+        echo "-drive if=pflash,format=raw,readonly=on,file=${OVMF_CODE} -drive if=pflash,format=raw,file=${OVMF_NVRAM_COPY}"
+    else
+        # Fallback: combined firmware (no persistent NVRAM)
+        echo "-bios /usr/share/ovmf/OVMF.fd"
+    fi
 }
 
 get_latest_iso_url() {
@@ -247,94 +405,141 @@ get_latest_iso_url() {
 }
 
 download_iso() {
+    log_step "Downloading Proxmox ISO"
     if [[ -f "pve.iso" ]]; then
-        echo -e "${CLR_YELLOW}ISO exists, skipping download${CLR_RESET}"
+        log_warn "ISO exists, skipping download (delete /root/pve.iso to force re-download)"
         return
     fi
-    echo -e "${CLR_BLUE}Downloading Proxmox ISO...${CLR_RESET}"
     local url
     url=$(get_latest_iso_url)
-    [[ -z "$url" ]] && { echo -e "${CLR_RED}Failed to find ISO URL${CLR_RESET}"; exit 1; }
-    echo "  URL: $url"
+    [[ -z "$url" ]] && die "Failed to find ISO URL at enterprise.proxmox.com/iso/"
+    log_info "URL: $url"
     wget -q --show-progress -O pve.iso "$url"
-    echo -e "${CLR_GREEN}ISO downloaded${CLR_RESET}"
+    log_ok "ISO downloaded"
 }
 
 # ============================================================
 # GENERATE answer.toml FOR PROXMOX AUTO-INSTALLER
 # ============================================================
+# CRITICAL: Inside QEMU, physical disks (/dev/nvme0n1, /dev/nvme1n1) appear
+# as virtio devices (/dev/vda, /dev/vdb). The Proxmox auto-installer runs
+# INSIDE QEMU, so it sees virtio names, NOT the physical NVMe paths.
+#
+# SOLUTION: We omit disk-list entirely. Since QEMU only has the 2 disks we
+# passed via -drive, the Proxmox installer auto-discovers them. This works
+# regardless of the virtio device naming and is the most robust approach.
+#
+# The physical disk paths from the TOML config are only used for the QEMU
+# -drive arguments (host side), never inside the guest answer.toml.
 make_answer_toml() {
-    echo -e "${CLR_BLUE}Generating answer.toml...${CLR_RESET}"
+    log_step "Generating answer.toml for Proxmox auto-installer"
+
     cat > answer.toml << EOF
 [global]
-    keyboard = "${KEYBOARD}"
-    country = "${COUNTRY}"
-    fqdn = "${FQDN}"
-    mailto = "${EMAIL}"
-    timezone = "${TIMEZONE}"
-    root_password = "${NEW_ROOT_PASSWORD}"
-    reboot_on_error = false
+keyboard = "${KEYBOARD}"
+country = "${COUNTRY}"
+fqdn = "${FQDN}"
+mailto = "${EMAIL}"
+timezone = "${TIMEZONE}"
+root-password = "${NEW_ROOT_PASSWORD}"
+reboot-on-error = false
 
 [network]
-    source = "${NET_SOURCE}"
+source = "${NET_SOURCE}"
 
 [disk-setup]
-    filesystem = "${FILESYSTEM}"
-    zfs.raid = "${ZFS_RAID}"
-    disk_list = ["${DISK1}", "${DISK2}"]
-
+filesystem = "${FILESYSTEM}"
 EOF
-    echo -e "${CLR_GREEN}answer.toml created${CLR_RESET}"
+
+    # Add ZFS-specific config only for ZFS
+    if [[ "$FILESYSTEM" == "zfs" ]]; then
+        cat >> answer.toml << EOF
+zfs.raid = "${ZFS_RAID}"
+EOF
+    fi
+
+    # NOTE: disk-list is intentionally omitted.
+    # Inside QEMU, the only disks are the two we pass via -drive (as virtio).
+    # The Proxmox installer auto-discovers all available disks.
+    # This avoids the /dev/nvme0n1 vs /dev/vda naming mismatch.
+
+    echo ""
+    log_info "answer.toml contents:"
+    echo -e "${CLR_YELLOW}"
+    cat answer.toml
+    echo -e "${CLR_RESET}"
+    log_ok "answer.toml created (disk-list omitted — auto-discovery inside QEMU)"
 }
 
 make_autoinstall_iso() {
-    echo -e "${CLR_BLUE}Building autoinstall ISO...${CLR_RESET}"
+    log_info "Building autoinstall ISO..."
     proxmox-auto-install-assistant prepare-iso pve.iso \
         --fetch-from iso --answer-file answer.toml --output pve-autoinstall.iso
-    echo -e "${CLR_GREEN}pve-autoinstall.iso ready${CLR_RESET}"
+    log_ok "pve-autoinstall.iso ready"
 }
 
 # ============================================================
 # INSTALL VIA QEMU
 # ============================================================
-is_uefi() { [ -d /sys/firmware/efi ]; }
-
 install_proxmox() {
-    echo -e "${CLR_GREEN}Starting Proxmox installation via QEMU...${CLR_RESET}"
-    local uefi_opts=""
-    is_uefi && uefi_opts="-bios /usr/share/ovmf/OVMF.fd" && echo "  UEFI mode"
-    echo -e "${CLR_RED}Do NOT interrupt — wait ~5-10 min${CLR_RESET}"
+    log_step "Installing Proxmox via QEMU"
 
-    qemu-system-x86_64 \
-        -enable-kvm $uefi_opts \
+    local uefi_args
+    uefi_args=$(build_uefi_args)
+
+    log_info "Boot mode: ${BOOT_MODE}"
+    log_info "QEMU drives: ${DISK1} → virtio (vda), ${DISK2} → virtio (vdb)"
+    [[ -n "$uefi_args" ]] && log_info "UEFI args: ${uefi_args}"
+    echo ""
+    log_warn "Do NOT interrupt — installation takes ~5-10 min"
+    log_warn "QEMU runs headless (no display). Output suppressed."
+    echo ""
+
+    local qemu_cmd="qemu-system-x86_64 \
+        -enable-kvm ${uefi_args} \
         -cpu host -smp 4 -m 4096 \
         -boot d -cdrom ./pve-autoinstall.iso \
         -drive file=${DISK1},format=raw,media=disk,if=virtio \
         -drive file=${DISK2},format=raw,media=disk,if=virtio \
-        -no-reboot -display none > /dev/null 2>&1
+        -no-reboot -display none"
 
-    echo -e "${CLR_GREEN}Installation complete${CLR_RESET}"
+    log_info "Command: $(echo $qemu_cmd | tr -s ' ')"
+    echo ""
+
+    eval $qemu_cmd > /tmp/qemu-install.log 2>&1
+    local rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        log_err "QEMU exited with code $rc"
+        log_err "Last 20 lines of /tmp/qemu-install.log:"
+        tail -20 /tmp/qemu-install.log
+        die "Installation failed — check /tmp/qemu-install.log"
+    fi
+
+    log_ok "Proxmox installation complete"
 }
 
 # ============================================================
 # POST-INSTALL CONFIGURATION VIA SSH
 # ============================================================
 boot_and_configure() {
-    echo -e "${CLR_GREEN}Booting installed system for configuration...${CLR_RESET}"
+    log_step "Post-install configuration via SSH"
 
-    local uefi_opts=""
-    is_uefi && uefi_opts="-bios /usr/share/ovmf/OVMF.fd"
+    local uefi_args
+    uefi_args=$(build_uefi_args)
 
-    nohup qemu-system-x86_64 -enable-kvm $uefi_opts \
+    log_info "Booting installed system in QEMU (SSH on port 5555)..."
+
+    nohup qemu-system-x86_64 -enable-kvm ${uefi_args} \
         -cpu host -device e1000,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp::5555-:22 \
         -smp 4 -m 4096 \
         -drive file=${DISK1},format=raw,media=disk,if=virtio \
         -drive file=${DISK2},format=raw,media=disk,if=virtio \
-        -display none > qemu_output.log 2>&1 &
+        -display none > /tmp/qemu-configure.log 2>&1 &
     QEMU_PID=$!
 
-    echo "  QEMU PID: $QEMU_PID"
+    log_info "QEMU PID: $QEMU_PID"
     echo -n "  Waiting for SSH"
     for i in $(seq 1 60); do
         if nc -z localhost 5555 2>/dev/null; then
@@ -343,16 +548,67 @@ boot_and_configure() {
         fi
         echo -n "."
         sleep 5
-        [[ $i -eq 60 ]] && { echo -e "\n${CLR_RED}SSH timeout after 5 min${CLR_RESET}"; return 1; }
+        if [[ $i -eq 60 ]]; then
+            echo ""
+            log_err "SSH timeout after 5 min"
+            log_err "Last 20 lines of /tmp/qemu-configure.log:"
+            tail -20 /tmp/qemu-configure.log
+            kill $QEMU_PID 2>/dev/null || true
+            die "Could not connect to installed system — check UEFI boot"
+        fi
     done
 
-    local SSH="sshpass -p $NEW_ROOT_PASSWORD ssh -p 5555 -o StrictHostKeyChecking=no root@localhost"
-    local SCP="sshpass -p $NEW_ROOT_PASSWORD scp -P 5555 -o StrictHostKeyChecking=no"
+    local SSH="sshpass -p ${NEW_ROOT_PASSWORD} ssh -p 5555 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@localhost"
+    local SCP="sshpass -p ${NEW_ROOT_PASSWORD} scp -P 5555 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
     ssh-keygen -f "/root/.ssh/known_hosts" -R "[localhost]:5555" 2>/dev/null || true
 
+    # Verify we can actually connect
+    if ! $SSH "hostname" &>/dev/null; then
+        log_err "SSH connected but authentication failed"
+        kill $QEMU_PID 2>/dev/null || true
+        die "Cannot authenticate — password mismatch?"
+    fi
+    local installed_hostname
+    installed_hostname=$($SSH "hostname" 2>/dev/null)
+    log_ok "Connected to installed system (hostname: ${installed_hostname})"
+
+    # Verify UEFI boot entries (if applicable)
+    if [[ "$BOOT_MODE" == "uefi" ]]; then
+        log_info "Checking UEFI boot configuration inside installed system..."
+        local efi_check
+        efi_check=$($SSH "ls -la /boot/efi/EFI/ 2>/dev/null && efibootmgr 2>/dev/null || echo 'efibootmgr not available'" 2>/dev/null)
+        echo "$efi_check" | head -20
+        # Check for EFI System Partition
+        local esp_check
+        esp_check=$($SSH "findmnt /boot/efi 2>/dev/null || echo 'ESP not mounted'" 2>/dev/null)
+        log_info "ESP mount: $esp_check"
+        # Ensure fallback boot path exists
+        if $SSH "[ -f /boot/efi/EFI/BOOT/BOOTX64.EFI ]" 2>/dev/null; then
+            log_ok "EFI fallback bootloader present (\\EFI\\BOOT\\BOOTX64.EFI)"
+        else
+            log_warn "EFI fallback bootloader NOT found — bare metal boot may fail"
+            log_warn "Will attempt to create fallback from systemd-boot or grub"
+            $SSH '
+                mkdir -p /boot/efi/EFI/BOOT
+                # Try systemd-boot first (PVE 8+)
+                if [ -f /boot/efi/EFI/systemd/systemd-bootx64.efi ]; then
+                    cp /boot/efi/EFI/systemd/systemd-bootx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI
+                # Try grub
+                elif [ -f /boot/efi/EFI/proxmox/grubx64.efi ]; then
+                    cp /boot/efi/EFI/proxmox/grubx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI
+                fi
+            ' 2>/dev/null || true
+            if $SSH "[ -f /boot/efi/EFI/BOOT/BOOTX64.EFI ]" 2>/dev/null; then
+                log_ok "EFI fallback bootloader created"
+            else
+                log_warn "Could not create EFI fallback — bare metal boot may require manual fix"
+            fi
+        fi
+    fi
+
     # ---- Generate and push config files ----
-    echo -e "${CLR_BLUE}Configuring system...${CLR_RESET}"
+    log_info "Configuring network, hostname, DNS..."
 
     # /etc/hosts
     cat > /tmp/pve-hosts << EOF
@@ -415,53 +671,80 @@ EOF
     # Disable rpcbind
     $SSH "systemctl disable --now rpcbind rpcbind.socket 2>/dev/null || true"
 
+    # Show disk layout for verification
+    log_info "Installed disk layout:"
+    $SSH "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null" || true
+    echo ""
+    if [[ "$FILESYSTEM" == "zfs" ]]; then
+        log_info "ZFS pool status:"
+        $SSH "zpool status 2>/dev/null" || true
+    fi
+
     # Shutdown VM
-    echo -e "${CLR_YELLOW}Shutting down VM...${CLR_RESET}"
+    log_info "Shutting down VM..."
     $SSH 'poweroff' || true
     wait $QEMU_PID 2>/dev/null || true
-    echo -e "${CLR_GREEN}Post-configuration complete${CLR_RESET}"
+
+    # Clean up session NVRAM (not needed after configuration)
+    rm -f "$OVMF_NVRAM_COPY"
+
+    log_ok "Post-configuration complete"
 }
 
 # ============================================================
 # DRY RUN
 # ============================================================
 dry_run_summary() {
+    log_step "DRY RUN — No changes will be made"
     echo ""
-    echo -e "${CLR_YELLOW}============================================${CLR_RESET}"
-    echo -e "${CLR_YELLOW} DRY RUN — No changes will be made${CLR_RESET}"
-    echo -e "${CLR_YELLOW}============================================${CLR_RESET}"
+    echo "  ┌─ Server ────────────────────────────────────"
+    echo "  │ Hostname:   ${HOSTNAME}"
+    echo "  │ FQDN:       ${FQDN}"
+    echo "  │ Country:    ${COUNTRY}"
+    echo "  │ Timezone:   ${TIMEZONE}"
+    echo "  │ Keyboard:   ${KEYBOARD}"
+    echo "  │ Email:      ${EMAIL}"
+    echo "  │"
+    echo "  ├─ Network ───────────────────────────────────"
+    echo "  │ Interface:  ${INTERFACE_NAME}"
+    echo "  │ IPv4 CIDR:  ${MAIN_IPV4_CIDR}"
+    echo "  │ Gateway:    ${MAIN_IPV4_GW}"
+    echo "  │ MAC:        ${MAC_ADDRESS}"
+    echo "  │ IPv6:       ${IPV6_CIDR:-none}"
+    echo "  │ DNS:        ${DNS1}, ${DNS2}"
+    echo "  │"
+    echo "  ├─ Disks ─────────────────────────────────────"
+    echo "  │ Filesystem: ${FILESYSTEM}"
+    echo "  │ RAID:       ${ZFS_RAID}"
+    echo "  │ Disk 1:     ${DISK1} (host) → /dev/vda (QEMU)"
+    echo "  │ Disk 2:     ${DISK2} (host) → /dev/vdb (QEMU)"
+    echo "  │"
+    echo "  ├─ Boot ──────────────────────────────────────"
+    echo "  │ Mode:       ${BOOT_MODE}"
+    if [[ "$BOOT_MODE" == "uefi" ]]; then
+    echo "  │ OVMF:       split CODE+VARS with persistent NVRAM"
+    echo "  │ Fallback:   will ensure \\EFI\\BOOT\\BOOTX64.EFI exists"
+    fi
+    echo "  └─────────────────────────────────────────────"
     echo ""
-    echo "  Hostname:   ${HOSTNAME}"
-    echo "  FQDN:       ${FQDN}"
-    echo "  Country:    ${COUNTRY}"
-    echo "  Timezone:   ${TIMEZONE}"
-    echo "  Keyboard:   ${KEYBOARD}"
-    echo "  Email:      ${EMAIL}"
+    echo "  answer.toml for Proxmox auto-installer:"
+    echo -e "  ${CLR_YELLOW}NOTE: disk-list is intentionally OMITTED${CLR_RESET}"
+    echo "  Inside QEMU, the only visible disks are the two virtio drives."
+    echo "  The Proxmox installer auto-discovers them — no name mapping needed."
     echo ""
-    echo "  Interface:  ${INTERFACE_NAME}"
-    echo "  IPv4 CIDR:  ${MAIN_IPV4_CIDR}"
-    echo "  Gateway:    ${MAIN_IPV4_GW}"
-    echo "  MAC:        ${MAC_ADDRESS}"
-    echo "  IPv6:       ${IPV6_CIDR:-none}"
-    echo "  DNS:        ${DNS1}, ${DNS2}"
+    echo "  Steps that would execute:"
+    echo "    1. Pre-flight checks (disks, KVM, interface, UEFI)"
+    echo "    2. Install packages (proxmox-auto-install-assistant, xorriso, ovmf)"
+    echo "    3. Download latest Proxmox VE ISO"
+    echo "    4. Generate answer.toml (without disk-list)"
+    echo "    5. Build autoinstall ISO"
+    echo "    6. Install via QEMU: ${DISK1} + ${DISK2} as virtio drives"
+    echo "    7. Boot VM with persistent UEFI NVRAM, configure via SSH"
+    echo "    8. Verify UEFI boot entries + fallback bootloader"
+    echo "    9. Configure: hostname, network, DNS, sysctl, repos"
+    echo "   10. Reboot into Proxmox on bare metal"
     echo ""
-    echo "  Filesystem: ${FILESYSTEM}"
-    echo "  RAID:       ${ZFS_RAID}"
-    echo "  Disk 1:     ${DISK1}"
-    echo "  Disk 2:     ${DISK2}"
-    echo ""
-    echo "  UEFI:       $(is_uefi && echo yes || echo no)"
-    echo ""
-    echo "Steps that would execute:"
-    echo "  1. Install packages (proxmox-auto-install-assistant, xorriso, ovmf)"
-    echo "  2. Download latest Proxmox VE ISO"
-    echo "  3. Generate answer.toml"
-    echo "  4. Build autoinstall ISO"
-    echo "  5. Install via QEMU to ${DISK1} + ${DISK2}"
-    echo "  6. Boot VM, configure via SSH (hosts, interfaces, resolv.conf)"
-    echo "  7. Reboot into Proxmox"
-    echo ""
-    echo "Post-install: run pve-harden.sh with matching TOML for security hardening"
+    echo "  Post-install: run pve-harden.sh with matching TOML"
 }
 
 # ============================================================
@@ -478,20 +761,29 @@ detect_hardware
 get_inputs
 
 if $DRY_RUN; then
+    preflight_checks
     dry_run_summary
     exit 0
 fi
 
+preflight_checks
+
 # Confirm before proceeding (even non-interactive)
 echo ""
-echo -e "${CLR_RED}WARNING: This will ERASE ${DISK1} and ${DISK2}${CLR_RESET}"
+echo -e "${CLR_RED}╔═══════════════════════════════════════════════════════╗${CLR_RESET}"
+echo -e "${CLR_RED}║  WARNING: This will COMPLETELY ERASE both disks:     ║${CLR_RESET}"
+echo -e "${CLR_RED}║    ${DISK1}$(printf '%*s' $((38 - ${#DISK1})) '')║${CLR_RESET}"
+echo -e "${CLR_RED}║    ${DISK2}$(printf '%*s' $((38 - ${#DISK2})) '')║${CLR_RESET}"
+echo -e "${CLR_RED}║  ALL DATA WILL BE DESTROYED!                         ║${CLR_RESET}"
+echo -e "${CLR_RED}╚═══════════════════════════════════════════════════════╝${CLR_RESET}"
+echo ""
 if $INTERACTIVE; then
-    read -p "Continue? (yes/no): " CONFIRM
+    read -p "Type 'yes' to continue: " CONFIRM
     [[ "$CONFIRM" != "yes" ]] && { echo "Aborted."; exit 0; }
 else
-    echo -e "${CLR_YELLOW}Non-interactive mode — proceeding in 5 seconds...${CLR_RESET}"
+    echo -e "${CLR_YELLOW}Non-interactive mode — proceeding in 10 seconds...${CLR_RESET}"
     echo -e "${CLR_YELLOW}Press Ctrl+C to abort${CLR_RESET}"
-    sleep 5
+    sleep 10
 fi
 
 prepare_packages
@@ -502,10 +794,10 @@ install_proxmox
 boot_and_configure
 
 echo ""
-echo -e "${CLR_GREEN}============================================${CLR_RESET}"
-echo -e "${CLR_GREEN} Installation complete!${CLR_RESET}"
-echo -e "${CLR_GREEN} Access: https://${MAIN_IPV4}:8006${CLR_RESET}"
-echo -e "${CLR_GREEN}============================================${CLR_RESET}"
+echo -e "${CLR_GREEN}╔═══════════════════════════════════════════════════════╗${CLR_RESET}"
+echo -e "${CLR_GREEN}║  Installation complete!                               ║${CLR_RESET}"
+echo -e "${CLR_GREEN}║  Access: https://${MAIN_IPV4}:8006$(printf '%*s' $((27 - ${#MAIN_IPV4})) '')║${CLR_RESET}"
+echo -e "${CLR_GREEN}╚═══════════════════════════════════════════════════════╝${CLR_RESET}"
 echo ""
 echo "Next steps:"
 echo "  1. Reboot into Proxmox"
@@ -513,14 +805,14 @@ echo "  2. Run: bash <(curl -sSL https://github.com/yurrosh/proxmox-utils-hetzne
 echo ""
 
 if $SKIP_REBOOT; then
-    echo -e "${CLR_YELLOW}Skipping reboot (--no-reboot)${CLR_RESET}"
+    log_warn "Skipping reboot (--no-reboot)"
 else
     if $INTERACTIVE; then
         read -e -p "Reboot now? (y/n): " -i "y" DO_REBOOT
         [[ "$DO_REBOOT" == "y" ]] && reboot
     else
-        echo -e "${CLR_YELLOW}Rebooting in 5 seconds...${CLR_RESET}"
-        sleep 5
+        echo -e "${CLR_YELLOW}Rebooting in 10 seconds...${CLR_RESET}"
+        sleep 10
         reboot
     fi
 fi

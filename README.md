@@ -80,14 +80,32 @@ bash pve-install-hetzner.sh --config myserver.toml --dry-run
 
 ### What the installer does
 
-1. Detects hardware (interfaces, NVMe disks, UEFI)
+1. **Pre-flight checks** — verifies disks exist, KVM available, interface up, UEFI/BIOS mode
 2. Downloads latest Proxmox VE ISO
 3. Generates `answer.toml` for the Proxmox auto-installer
-4. Builds an autoinstall ISO
-5. Installs via QEMU to ZFS RAID-1
-6. Boots the installed system, configures via SSH: hostname, network, DNS, sysctl
-7. Disables enterprise repos, enables `pve-no-subscription`
-8. Reboots into Proxmox
+4. Builds an autoinstall ISO (`proxmox-auto-install-assistant`)
+5. Installs via QEMU to ZFS RAID-1 (disks passed as virtio drives)
+6. Boots the installed system in QEMU, configures via SSH: hostname, network, DNS, sysctl
+7. Verifies UEFI boot entries and ensures fallback bootloader exists
+8. Disables enterprise repos, enables `pve-no-subscription`
+9. Reboots into Proxmox on bare metal
+
+### How disk mapping works
+
+The TOML config `disk_list` contains **physical disk paths** as seen in the Hetzner rescue system (e.g. `/dev/nvme0n1`, `/dev/nvme1n1`). These are used as QEMU `-drive` arguments on the host side.
+
+Inside QEMU, these disks appear as **virtio devices** (`/dev/vda`, `/dev/vdb`). The Proxmox auto-installer's `answer.toml` intentionally **omits** `disk-list` — since the QEMU VM only has the two drives we passed in, the installer auto-discovers them. This avoids any NVMe-to-virtio naming mismatch.
+
+### UEFI boot handling
+
+Most Hetzner dedicated servers (AX-series, EX-series) boot in UEFI mode. The installer:
+
+- Detects UEFI via `/sys/firmware/efi`
+- Uses **split OVMF firmware** (`OVMF_CODE.fd` + writable `OVMF_VARS.fd` copy) so EFI boot entries persist between the install and configure QEMU steps
+- After installation, verifies the EFI System Partition (ESP) and boot entries
+- Ensures the **EFI fallback bootloader** (`\EFI\BOOT\BOOTX64.EFI`) exists for bare-metal boot
+
+> **Note**: Hetzner servers need UEFI rescue mode enabled for the physical reboot to work. If the server doesn't boot after installation, request UEFI rescue activation via Hetzner Robot or support — see [Hetzner UEFI docs](https://docs.hetzner.com/robot/dedicated-server/operating-systems/uefi/).
 
 ## Hardening
 

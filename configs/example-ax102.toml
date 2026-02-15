@@ -22,6 +22,10 @@ search_domain = "example.com"
 [disk]
 filesystem = "zfs"
 zfs_raid = "raid1"
+# Physical NVMe paths as seen in Hetzner rescue system (lsblk).
+# The installer passes these to QEMU as virtio drives. Inside the QEMU VM,
+# the Proxmox auto-installer sees /dev/vda + /dev/vdb and auto-discovers
+# them — no disk-list is written to answer.toml.
 disk_list = ["/dev/nvme0n1", "/dev/nvme1n1"]
 
 [users]
