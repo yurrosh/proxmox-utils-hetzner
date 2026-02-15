@@ -994,8 +994,8 @@ echo ""
 if $SKIP_REBOOT; then
     log_warn "Skipping reboot (--no-reboot)"
 else
-    if $INTERACTIVE; then
-        read -p "Reboot now? (y/n): " DO_REBOOT < "${TTY_INPUT:-/dev/stdin}" || true
+    if [[ -n "${TTY_INPUT:-}" ]]; then
+        read -p "Reboot now? (y/n): " DO_REBOOT < "$TTY_INPUT" || true
         if [[ "$DO_REBOOT" == "y" ]]; then reboot; fi
     else
         echo -e "${CLR_YELLOW}Rebooting in 10 seconds...${CLR_RESET}"
