@@ -105,7 +105,21 @@ parse_toml() {
         $0==sec{s=1;next} /^\[/{s=0}
         s && $0~"^"k"[[:space:]]*=" {
             sub(/^[^=]*=[[:space:]]*/,"")
-            gsub(/^["'\'']/,""); gsub(/["'\'']\s*$/,"")
+            # Handle double-quoted values: extract between first pair of "
+            if (substr($0,1,1) == "\"") {
+                sub(/^"/,"")
+                sub(/".*$/,"")
+            }
+            # Handle single-quoted values
+            else if (substr($0,1,1) == "'\''") {
+                sub(/^'\''/,"")
+                sub(/'\''.*$/,"")
+            }
+            # Unquoted: strip inline comment and trailing whitespace
+            else {
+                sub(/[[:space:]]*#.*$/, "")
+                sub(/[[:space:]]+$/, "")
+            }
             print; exit
         }' "$file" 2>/dev/null)
     echo "${val:-$default}"
