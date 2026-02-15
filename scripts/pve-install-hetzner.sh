@@ -539,10 +539,7 @@ download_iso() {
 # as virtio devices (/dev/vda, /dev/vdb). The Proxmox auto-installer runs
 # INSIDE QEMU, so it sees virtio names, NOT the physical NVMe paths.
 #
-# SOLUTION: We omit disk-list entirely. Since QEMU only has the 2 disks we
-# passed via -drive, the Proxmox installer auto-discovers them. This works
-# regardless of the virtio device naming and is the most robust approach.
-#
+# The answer.toml must list /dev/vda, /dev/vdb (QEMU names).
 # The physical disk paths from the TOML config are only used for the QEMU
 # -drive arguments (host side), never inside the guest answer.toml.
 make_answer_toml() {
@@ -572,17 +569,18 @@ zfs.raid = "${ZFS_RAID}"
 EOF
     fi
 
-    # NOTE: disk-list is intentionally omitted.
-    # Inside QEMU, the only disks are the two we pass via -drive (as virtio).
-    # The Proxmox installer auto-discovers all available disks.
-    # This avoids the /dev/nvme0n1 vs /dev/vda naming mismatch.
+    # Inside QEMU, physical NVMe drives (/dev/nvme0n1, /dev/nvme1n1) appear as
+    # virtio devices (/dev/vda, /dev/vdb). The answer.toml must use QEMU names.
+    cat >> answer.toml << 'EOF'
+disk_list = ["/dev/vda", "/dev/vdb"]
+EOF
 
     echo ""
     log_info "answer.toml contents:"
     echo -e "${CLR_YELLOW}"
     sed 's/^root-password = .*/root-password = "********"/' answer.toml
     echo -e "${CLR_RESET}"
-    log_ok "answer.toml created (disk-list omitted — auto-discovery inside QEMU)"
+    log_ok "answer.toml created (disk_list = vda/vdb — QEMU virtio names for physical NVMe)"
 }
 
 make_autoinstall_iso() {
