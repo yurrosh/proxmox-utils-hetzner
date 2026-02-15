@@ -168,8 +168,10 @@ get_inputs() {
     # Validate
     [[ -z "$HOSTNAME" ]] && die "Hostname required"
     [[ -z "$FQDN" ]] && die "FQDN required"
-    [[ -z "$NEW_ROOT_PASSWORD" ]] && die "Root password required"
-    [[ ${#NEW_ROOT_PASSWORD} -lt 5 ]] && die "Root password must be at least 5 characters (Proxmox requirement)"
+    if ! $DRY_RUN; then
+        [[ -z "$NEW_ROOT_PASSWORD" ]] && die "Root password required"
+        [[ ${#NEW_ROOT_PASSWORD} -lt 5 ]] && die "Root password must be at least 5 characters (Proxmox requirement)"
+    fi
 }
 
 get_inputs_interactive() {
@@ -200,7 +202,7 @@ get_inputs_interactive() {
 
     # Password
     while [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; do
-        read -s -p "Root password: " NEW_ROOT_PASSWORD; echo ""
+        read -s -p "Root password: " NEW_ROOT_PASSWORD < /dev/tty; echo ""
     done
 }
 
@@ -242,9 +244,12 @@ get_inputs_from_toml() {
     NEW_ROOT_PASSWORD=$(parse_toml "$CONFIG_FILE" users root_password "")
 
     # Prompt for password if empty (even in non-interactive)
-    while [[ -z "$NEW_ROOT_PASSWORD" ]]; do
-        read -s -p "Root password (not in config — enter now): " NEW_ROOT_PASSWORD; echo ""
-    done
+    # Use /dev/tty explicitly — stdin may be a pipe when run via bash <(curl ...)
+    if ! $DRY_RUN; then
+        while [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; do
+            read -s -p "Root password (not in config — enter now): " NEW_ROOT_PASSWORD < /dev/tty; echo ""
+        done
+    fi
 
     echo "  Hostname:  ${HOSTNAME}"
     echo "  FQDN:      ${FQDN}"
@@ -826,7 +831,7 @@ echo -e "${CLR_RED}║  ALL DATA WILL BE DESTROYED!                         ║$
 echo -e "${CLR_RED}╚═══════════════════════════════════════════════════════╝${CLR_RESET}"
 echo ""
 if $INTERACTIVE; then
-    read -p "Type 'yes' to continue: " CONFIRM
+    read -p "Type 'yes' to continue: " CONFIRM < /dev/tty
     [[ "$CONFIRM" != "yes" ]] && { echo "Aborted."; exit 0; }
 else
     echo -e "${CLR_YELLOW}Non-interactive mode — proceeding in 10 seconds...${CLR_RESET}"
@@ -856,7 +861,7 @@ if $SKIP_REBOOT; then
     log_warn "Skipping reboot (--no-reboot)"
 else
     if $INTERACTIVE; then
-        read -e -p "Reboot now? (y/n): " -i "y" DO_REBOOT
+        read -p "Reboot now? (y/n): " DO_REBOOT < /dev/tty
         [[ "$DO_REBOOT" == "y" ]] && reboot
     else
         echo -e "${CLR_YELLOW}Rebooting in 10 seconds...${CLR_RESET}"
