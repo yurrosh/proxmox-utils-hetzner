@@ -2,7 +2,7 @@
 # vm-audit.sh — Comprehensive VM system audit & benchmark
 # Run inside a Proxmox VM to check configs, optimizations, and performance
 # Usage: bash vm-audit.sh [--bench]   (--bench runs I/O and CPU benchmarks)
-set -euo pipefail
+set -u   # strict vars only; no -e/-o pipefail (audit probes may legitimately fail)
 
 # ── Colors ──────────────────────────────────────────────────────────────
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'; B='\033[0;34m'
@@ -220,13 +220,11 @@ section "5. DISK & I/O"
 # ════════════════════════════════════════════════════════════════════════
 echo -e "  ${D}Device           Size   RO  Sched      FS       Mount${N}"
 lsblk -ndo NAME,SIZE,RO,MODEL 2>/dev/null | while read -r name size ro model; do
-    sched=$(cat "/sys/block/$name/queue/scheduler" 2>/dev/null | tr -d '[]' | awk '{for(i=1;i<=NF;i++) if($i ~ /^\[?[a-z]/) print $i}')
     sched_raw=$(cat "/sys/block/$name/queue/scheduler" 2>/dev/null || echo "?")
     rota=$(cat "/sys/block/$name/queue/rotational" 2>/dev/null || echo "?")
-    # Find mount + FS
-    mp=$(lsblk -nro MOUNTPOINT "/dev/$name" 2>/dev/null | grep -v '^$' | head -1)
-    fs=$(lsblk -nro FSTYPE "/dev/$name" 2>/dev/null | grep -v '^$' | head -1)
-    [ -z "$mp" ] && { mp=$(lsblk -nro MOUNTPOINT "/dev/${name}"* 2>/dev/null | grep -v '^$' | head -1); fs=$(lsblk -nro FSTYPE "/dev/${name}"* 2>/dev/null | grep -v '^$' | head -1); }
+    mp=$(lsblk -nro MOUNTPOINT "/dev/$name" 2>/dev/null | grep -v '^$' | head -1 || true)
+    fs=$(lsblk -nro FSTYPE "/dev/$name" 2>/dev/null | grep -v '^$' | head -1 || true)
+    [ -z "$mp" ] && { mp=$(lsblk -nro MOUNTPOINT "/dev/${name}"* 2>/dev/null | grep -v '^$' | head -1 || true); fs=$(lsblk -nro FSTYPE "/dev/${name}"* 2>/dev/null | grep -v '^$' | head -1 || true); }
     printf "  %-16s %-6s %-3s %-10s %-8s %s\n" "$name" "$size" "rota=$rota" "$sched_raw" "${fs:-—}" "${mp:-—}"
 done
 
