@@ -18,8 +18,8 @@ CLR_YELLOW="\033[1;33m"
 CLR_BLUE="\033[1;34m"
 CLR_RESET="\033[m"
 
-[[ $EUID -ne 0 ]] && { echo -e "${CLR_RED}Must run as root${CLR_RESET}"; exit 1; }
-[[ $# -lt 1 ]] && { echo "Usage: $0 <config.toml>  or  $0 --defaults"; exit 1; }
+if [[ $EUID -ne 0 ]]; then echo -e "${CLR_RED}Must run as root${CLR_RESET}"; exit 1; fi
+if [[ $# -lt 1 ]]; then echo "Usage: $0 <config.toml>  or  $0 --defaults"; exit 1; fi
 
 # ---- Minimal TOML parser ----
 parse_toml() {
@@ -29,7 +29,14 @@ parse_toml() {
         $0==sec{s=1;next} /^\[/{s=0}
         s && $0~"^"k"[[:space:]]*=" {
             sub(/^[^=]*=[[:space:]]*/,"")
-            gsub(/^["'\'']/,""); gsub(/["'\'']\s*$/,"")
+            # Handle quoted values: extract content between quotes
+            if (match($0, /^"([^"]*)"/, m)) { print m[1]; exit }
+            if (match($0, /^'\''([^'\'']*)'\''/, m)) { print m[1]; exit }
+            # Handle arrays: extract between brackets
+            if (match($0, /^\[([^\]]*)\]/, m)) { print "[" m[1] "]"; exit }
+            # Unquoted: strip trailing comment and whitespace
+            sub(/[[:space:]]*#.*$/, "")
+            sub(/[[:space:]]+$/, "")
             print; exit
         }' "$file" 2>/dev/null)
     echo "${val:-$default}"
@@ -43,12 +50,16 @@ if [[ "$CONFIG" == "--defaults" ]]; then
     NOTIF_AUTHOR="Proxmox $(hostname -s)"
     ZFS_ARC_MIN_GB=6; ZFS_ARC_MAX_GB=12
     CONNTRACK_MAX=1048576; CONNTRACK_TIMEOUT=28800
+    PERMIT_ROOT_LOGIN="prohibit-password"
+    SMART_WARN_TEMP=50; SMART_CRIT_TEMP=70
+    FW_TCP_PORTS="[22, 8006]"; FW_ALLOW_ICMP="true"; FW_DEFAULT_IN="DROP"
+    F2B_BANTIME=3600; F2B_FINDTIME=600; F2B_MAXRETRY=3
     read -p "SMTP user (from-address for Brevo): " SMTP_USER
     read -p "Admin email (notifications go here): " NOTIF_EMAIL
     NOTIF_FROM="${SMTP_USER}"
     echo -e "${CLR_YELLOW}Using defaults (SMTP key not set — configure manually or pass config.toml)${CLR_RESET}"
 else
-    [[ ! -f "$CONFIG" ]] && { echo -e "${CLR_RED}Not found: $CONFIG${CLR_RESET}"; exit 1; }
+    if [[ ! -f "$CONFIG" ]]; then echo -e "${CLR_RED}Not found: $CONFIG${CLR_RESET}"; exit 1; fi
     SMTP_RELAY=$(parse_toml "$CONFIG" hardening smtp_relay_host "[smtp-relay.brevo.com]:587")
     SMTP_USER=$(parse_toml "$CONFIG" hardening smtp_user "")
     SMTP_KEY=$(parse_toml "$CONFIG" hardening smtp_key "")
@@ -59,10 +70,19 @@ else
     ZFS_ARC_MAX_GB=$(parse_toml "$CONFIG" hardening zfs_arc_max_gb 12)
     CONNTRACK_MAX=$(parse_toml "$CONFIG" hardening conntrack_max 1048576)
     CONNTRACK_TIMEOUT=$(parse_toml "$CONFIG" hardening conntrack_tcp_timeout 28800)
+    PERMIT_ROOT_LOGIN=$(parse_toml "$CONFIG" hardening permit_root_login "prohibit-password")
+    SMART_WARN_TEMP=$(parse_toml "$CONFIG" hardening smart_warn_temp 50)
+    SMART_CRIT_TEMP=$(parse_toml "$CONFIG" hardening smart_crit_temp 70)
+    FW_TCP_PORTS=$(parse_toml "$CONFIG" hardening firewall_tcp_ports "[22, 8006]")
+    FW_ALLOW_ICMP=$(parse_toml "$CONFIG" hardening firewall_allow_icmp "true")
+    FW_DEFAULT_IN=$(parse_toml "$CONFIG" hardening firewall_default_in "DROP")
+    F2B_BANTIME=$(parse_toml "$CONFIG" hardening f2b_bantime 3600)
+    F2B_FINDTIME=$(parse_toml "$CONFIG" hardening f2b_findtime 600)
+    F2B_MAXRETRY=$(parse_toml "$CONFIG" hardening f2b_maxretry 3)
 fi
 
-[[ -z "$SMTP_USER" ]] && { echo -e "${CLR_RED}smtp_user is required (from-address for SMTP relay)${CLR_RESET}"; exit 1; }
-[[ -z "$NOTIF_EMAIL" ]] && { echo -e "${CLR_RED}notification_email is required (where alerts go)${CLR_RESET}"; exit 1; }
+if [[ -z "$SMTP_USER" ]]; then echo -e "${CLR_RED}smtp_user is required (from-address for SMTP relay)${CLR_RESET}"; exit 1; fi
+if [[ -z "$NOTIF_EMAIL" ]]; then echo -e "${CLR_RED}notification_email is required (where alerts go)${CLR_RESET}"; exit 1; fi
 
 HOST_S=$(hostname -s)
 FQDN=$(hostname -f)
@@ -82,10 +102,8 @@ warn() { echo -e "  ${CLR_YELLOW}⚠ $1${CLR_RESET}"; }
 # ===========================================================
 step 1 "System update"
 apt-get update -qq
-apt-get -y upgrade >/dev/null 2>&1
-ok "Packages updated"
-# Proxmox-specific updates (may not exist on fresh install yet)
-pveupgrade 2>/dev/null && ok "PVE upgraded" || true
+apt-get -y dist-upgrade >/dev/null 2>&1
+ok "Packages updated (dist-upgrade)"
 pveam update 2>/dev/null && ok "Appliance templates updated" || true
 
 # ===========================================================
@@ -101,12 +119,12 @@ ok "Installed: fail2ban, smartmontools, libguestfs-tools, at, ..."
 # 3. SSH hardening
 # ===========================================================
 step 3 "SSH hardening"
-if grep -q "^PermitRootLogin prohibit-password" /etc/ssh/sshd_config; then
+if grep -q "^PermitRootLogin ${PERMIT_ROOT_LOGIN}" /etc/ssh/sshd_config; then
     skip "Already hardened"
 else
-    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+    sed -i "s/^#\?PermitRootLogin.*/PermitRootLogin ${PERMIT_ROOT_LOGIN}/" /etc/ssh/sshd_config
     systemctl restart sshd
-    ok "PermitRootLogin → prohibit-password"
+    ok "PermitRootLogin → ${PERMIT_ROOT_LOGIN}"
 fi
 
 # ===========================================================
@@ -172,13 +190,13 @@ fi
 # 6. SMART monitoring
 # ===========================================================
 step 6 "SMART monitoring"
-if ! grep -q "W 4,50,70" /etc/smartd.conf 2>/dev/null; then
+if ! grep -q "W 4,${SMART_WARN_TEMP},${SMART_CRIT_TEMP}" /etc/smartd.conf 2>/dev/null; then
     # Replace all DEVICESCAN lines with one correct one
     sed -i '/^DEVICESCAN/d' /etc/smartd.conf
     # Insert after the last comment block
-    sed -i '17a DEVICESCAN -a -o on -S on -n standby,q -s (S/../01/.|L/../15/3) -W 4,50,70 -m root' /etc/smartd.conf
+    sed -i "17a DEVICESCAN -a -o on -S on -n standby,q -s (S/../01/.|L/../15/3) -W 4,${SMART_WARN_TEMP},${SMART_CRIT_TEMP} -m root" /etc/smartd.conf
     systemctl restart smartd
-    ok "Monthly short, quarterly long, warn@50°C crit@70°C"
+    ok "Monthly short, quarterly long, warn@${SMART_WARN_TEMP}°C crit@${SMART_CRIT_TEMP}°C"
 else
     # Clean up duplicate DEVICESCAN lines if present
     if [ "$(grep -c '^DEVICESCAN' /etc/smartd.conf)" -gt 1 ]; then
@@ -231,11 +249,11 @@ ok "Notifications: ${NOTIF_AUTHOR} → ${NOTIF_EMAIL}"
 # 8. Fail2ban
 # ===========================================================
 step 8 "Fail2ban"
-cat > /etc/fail2ban/jail.local << 'EOF'
+cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 3
+bantime = ${F2B_BANTIME}
+findtime = ${F2B_FINDTIME}
+maxretry = ${F2B_MAXRETRY}
 
 [sshd]
 enabled = true
@@ -245,9 +263,9 @@ enabled = true
 port = https,http,8006
 filter = proxmox
 backend = systemd
-maxretry = 3
-findtime = 600
-bantime = 3600
+maxretry = ${F2B_MAXRETRY}
+findtime = ${F2B_FINDTIME}
+bantime = ${F2B_BANTIME}
 EOF
 cat > /etc/fail2ban/filter.d/proxmox.conf << 'EOF'
 [Definition]
@@ -263,17 +281,26 @@ ok "SSH + Proxmox jails active"
 # ===========================================================
 step 9 "Proxmox firewall"
 mkdir -p /etc/pve/firewall "/etc/pve/nodes/${HOST_S}"
-cat > /etc/pve/firewall/cluster.fw << 'EOF'
-[OPTIONS]
-enable: 1
-policy_in: DROP
-policy_out: ACCEPT
 
-[RULES]
-IN ACCEPT -p tcp -dport 22 -log nolog
-IN ACCEPT -p tcp -dport 8006 -log nolog
-IN ACCEPT -p icmp -log nolog
-EOF
+# Parse TCP ports from TOML array format [22, 8006] → individual rules
+FW_PORTS_CLEAN=$(echo "$FW_TCP_PORTS" | tr -d '[]' | tr ',' ' ')
+
+{
+    echo "[OPTIONS]"
+    echo "enable: 1"
+    echo "policy_in: ${FW_DEFAULT_IN}"
+    echo "policy_out: ACCEPT"
+    echo ""
+    echo "[RULES]"
+    for port in $FW_PORTS_CLEAN; do
+        port=$(echo "$port" | tr -d ' ')
+        echo "IN ACCEPT -p tcp -dport ${port} -log nolog"
+    done
+    if [[ "$FW_ALLOW_ICMP" == "true" ]]; then
+        echo "IN ACCEPT -p icmp -log nolog"
+    fi
+} > /etc/pve/firewall/cluster.fw
+
 cat > "/etc/pve/nodes/${HOST_S}/host.fw" << 'EOF'
 [OPTIONS]
 enable: 1
@@ -284,7 +311,7 @@ echo "pve-firewall stop; sed -i 's/enable: 1/enable: 0/' /etc/pve/firewall/clust
 AT_JOB=$(atq | tail -1 | awk '{print $1}')
 warn "Safety: firewall auto-disables in 10min → cancel with: atrm ${AT_JOB}"
 systemctl restart pve-firewall
-ok "DROP default, allow SSH(22) + WebUI(8006) + ICMP"
+ok "${FW_DEFAULT_IN} default, allow TCP(${FW_PORTS_CLEAN// /,})$( [[ "$FW_ALLOW_ICMP" == "true" ]] && echo ' + ICMP' )"
 
 # ===========================================================
 # 10. Unattended upgrades
