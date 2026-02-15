@@ -123,8 +123,8 @@ detect_hardware() {
     DEFAULT_INTERFACE="${DEFAULT_INTERFACE:-eno1}"
 
     # All interface names
-    AVAILABLE_INTERFACES=$(ip -d link show | grep -v "lo:" | grep -E '(^[0-9]+:|altname)' | \
-        awk '/^[0-9]+:/ {iface=$2; gsub(/:/, "", iface); printf "%s", iface} /altname/ {printf ",%s", $2} END {print ""}' | sed 's/,$//')
+    # All interface names (excluding lo)
+    AVAILABLE_INTERFACES=$(ip -o link show | awk -F'[: ]+' '$2 != "lo" {printf "%s%s", (n++?", ":""), $2}')
 
     # Detect disks
     DETECTED_DISKS=$(lsblk -dpno NAME,TYPE | awk '$2=="disk"{print $1}' | grep -E "nvme|sd" | sort)
@@ -175,6 +175,7 @@ get_inputs() {
 get_inputs_interactive() {
     echo -e "${CLR_YELLOW}--- Interactive Configuration ---${CLR_RESET}"
     read -e -p "Interface name (detected: ${AVAILABLE_INTERFACES}): " -i "${DEFAULT_INTERFACE}" INTERFACE_NAME
+    RESCUE_INTERFACE="$INTERFACE_NAME"
     detect_network_for_interface "$INTERFACE_NAME"
 
     echo -e "${CLR_YELLOW}Detected: IPv4=${MAIN_IPV4_CIDR} GW=${MAIN_IPV4_GW} MAC=${MAC_ADDRESS}${CLR_RESET}"
@@ -218,7 +219,15 @@ get_inputs_from_toml() {
     DNS2=$(parse_toml "$CONFIG_FILE" network dns2 "185.12.64.2")
     NET_SOURCE=$(parse_toml "$CONFIG_FILE" network source "from-dhcp")
 
-    detect_network_for_interface "$INTERFACE_NAME"
+    # Rescue interface for IP/gateway detection — may differ from bare-metal name
+    # Try TOML interface first; if it doesn't exist in rescue, fall back to auto-detected
+    if ip link show "$INTERFACE_NAME" &>/dev/null; then
+        RESCUE_INTERFACE="$INTERFACE_NAME"
+    else
+        RESCUE_INTERFACE="$DEFAULT_INTERFACE"
+        log_warn "Interface '$INTERFACE_NAME' not found in rescue — using '$DEFAULT_INTERFACE' for detection"
+    fi
+    detect_network_for_interface "$RESCUE_INTERFACE"
 
     FILESYSTEM=$(parse_toml "$CONFIG_FILE" disk filesystem "zfs")
     ZFS_RAID=$(parse_toml "$CONFIG_FILE" disk zfs_raid "raid1")
@@ -277,12 +286,21 @@ preflight_checks() {
         log_ok "Disk 2: $DISK2 ($(( size2 / 1024 / 1024 / 1024 )) GB)"
     fi
 
-    # Check network interface
-    if ! ip link show "$INTERFACE_NAME" &>/dev/null; then
-        log_err "Network interface not found: $INTERFACE_NAME"
-        errors=$((errors + 1))
-    else
+    # Check network — interface name in config may differ from rescue
+    if ip link show "$INTERFACE_NAME" &>/dev/null; then
         log_ok "Interface: $INTERFACE_NAME (IPv4: $MAIN_IPV4_CIDR)"
+    elif [[ -n "${RESCUE_INTERFACE:-}" ]] && ip link show "$RESCUE_INTERFACE" &>/dev/null; then
+        log_ok "Interface: $INTERFACE_NAME (bare-metal) — using $RESCUE_INTERFACE in rescue"
+        log_ok "  IPv4: $MAIN_IPV4_CIDR  GW: $MAIN_IPV4_GW"
+    else
+        log_err "No usable network interface — $INTERFACE_NAME not found"
+        errors=$((errors + 1))
+    fi
+
+    # Verify we actually got an IP
+    if [[ -z "$MAIN_IPV4" ]]; then
+        log_err "No IPv4 address detected"
+        errors=$((errors + 1))
     fi
 
     # Check UEFI + OVMF availability
@@ -607,8 +625,38 @@ boot_and_configure() {
         fi
     fi
 
+    # ---- Detect the installed system's interface name ----
+    # The Proxmox auto-installer may enable interface pinning (nic0, nic1...)
+    # which differs from the rescue interface name. Read what the installer chose.
+    log_info "Detecting installed system interface name..."
+    INSTALL_INTERFACE=$($SSH "awk '/bridge-ports/{print \$2}' /etc/network/interfaces 2>/dev/null" 2>/dev/null || true)
+    if [[ -z "$INSTALL_INTERFACE" ]]; then
+        # No bridge found — check for direct interface
+        INSTALL_INTERFACE=$($SSH "grep -E '^iface .* inet' /etc/network/interfaces 2>/dev/null | grep -v lo | awk '{print \$2}' | head -1" 2>/dev/null || true)
+    fi
+    if [[ -z "$INSTALL_INTERFACE" ]]; then
+        # Last resort: use non-loopback interface from running system
+        INSTALL_INTERFACE=$($SSH "ip -o link show | awk -F': ' '!/lo:/{print \$2; exit}'" 2>/dev/null || true)
+    fi
+    INSTALL_INTERFACE="${INSTALL_INTERFACE:-${INTERFACE_NAME:-nic0}}"
+
+    # Check if this is a QEMU virtual NIC (ens3/enp0s*) — if so, use nic0
+    # because Proxmox interface pinning will map nic0 to the real NIC on bare metal
+    if [[ "$INSTALL_INTERFACE" =~ ^(ens|enp0s) ]]; then
+        log_info "Detected QEMU virtual NIC '$INSTALL_INTERFACE' — checking for interface pinning..."
+        if $SSH "ls /etc/systemd/network/*pve* 2>/dev/null" &>/dev/null; then
+            INSTALL_INTERFACE="nic0"
+            log_ok "Proxmox interface pinning active → using 'nic0' for bare-metal config"
+        else
+            log_warn "No interface pinning found — using TOML interface '${INTERFACE_NAME}'"
+            INSTALL_INTERFACE="${INTERFACE_NAME}"
+        fi
+    else
+        log_ok "Installed system interface: $INSTALL_INTERFACE"
+    fi
+
     # ---- Generate and push config files ----
-    log_info "Configuring network, hostname, DNS..."
+    log_info "Configuring network, hostname, DNS (interface: $INSTALL_INTERFACE)..."
 
     # /etc/hosts
     cat > /tmp/pve-hosts << EOF
@@ -631,13 +679,13 @@ EOF
 auto lo
 iface lo inet loopback
 
-iface ${INTERFACE_NAME} inet manual
+iface ${INSTALL_INTERFACE} inet manual
 
 auto vmbr0
 iface vmbr0 inet static
     address ${MAIN_IPV4_CIDR}
     gateway ${MAIN_IPV4_GW}
-    bridge-ports ${INTERFACE_NAME}
+    bridge-ports ${INSTALL_INTERFACE}
     bridge-stp off
     bridge-fd 0
 EOF
