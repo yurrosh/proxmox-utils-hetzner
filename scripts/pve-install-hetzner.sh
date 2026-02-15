@@ -976,9 +976,9 @@ make_autoinstall_iso
 install_proxmox
 boot_and_configure
 
-local elapsed=$(( $(date +%s) - SCRIPT_START ))
-local mins=$(( elapsed / 60 ))
-local secs=$(( elapsed % 60 ))
+elapsed=$(( $(date +%s) - SCRIPT_START ))
+mins=$(( elapsed / 60 ))
+secs=$(( elapsed % 60 ))
 
 echo ""
 echo -e "${CLR_GREEN}╔═══════════════════════════════════════════════════════╗${CLR_RESET}"
