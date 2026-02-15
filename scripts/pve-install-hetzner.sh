@@ -39,7 +39,7 @@ die() { log_err "$@"; exit 1; }
 trap 'log_err "Script failed at line $LINENO (exit code $?). Last command: $BASH_COMMAND"' ERR
 
 # ---- Ensure root ----
-[[ $EUID -ne 0 ]] && die "Must run as root"
+if [[ $EUID -ne 0 ]]; then die "Must run as root"; fi
 
 # ---- Detect terminal for interactive prompts ----
 # bash <(curl ...) keeps stdin on terminal; curl|bash redirects stdin to pipe
@@ -185,11 +185,11 @@ get_inputs() {
     fi
 
     # Validate
-    [[ -z "$HOSTNAME" ]] && die "Hostname required"
-    [[ -z "$FQDN" ]] && die "FQDN required"
+    if [[ -z "$HOSTNAME" ]]; then die "Hostname required"; fi
+    if [[ -z "$FQDN" ]]; then die "FQDN required"; fi
     if ! $DRY_RUN; then
-        [[ -z "$NEW_ROOT_PASSWORD" ]] && die "Root password required"
-        [[ ${#NEW_ROOT_PASSWORD} -lt 5 ]] && die "Root password must be at least 5 characters (Proxmox requirement)"
+        if [[ -z "$NEW_ROOT_PASSWORD" ]]; then die "Root password required"; fi
+        if [[ ${#NEW_ROOT_PASSWORD} -lt 5 ]]; then die "Root password must be at least 5 characters (Proxmox requirement)"; fi
     fi
 }
 
@@ -227,7 +227,7 @@ get_inputs_interactive() {
 
 get_inputs_from_toml() {
     log_info "Reading config: ${CONFIG_FILE}"
-    [[ ! -f "$CONFIG_FILE" ]] && die "Config not found: $CONFIG_FILE"
+    if [[ ! -f "$CONFIG_FILE" ]]; then die "Config not found: $CONFIG_FILE"; fi
 
     HOSTNAME=$(parse_toml "$CONFIG_FILE" server hostname "")
     FQDN=$(parse_toml "$CONFIG_FILE" server fqdn "")
@@ -356,7 +356,7 @@ preflight_checks() {
         log_ok "RAM: ${total_ram_mb}MB available"
     fi
 
-    [[ $errors -gt 0 ]] && die "Pre-flight failed with $errors error(s)"
+    if [[ $errors -gt 0 ]]; then die "Pre-flight failed with $errors error(s)"; fi
     log_ok "All pre-flight checks passed"
 }
 
@@ -461,7 +461,7 @@ download_iso() {
     fi
     local url
     url=$(get_latest_iso_url)
-    [[ -z "$url" ]] && die "Failed to find ISO URL at enterprise.proxmox.com/iso/"
+    if [[ -z "$url" ]]; then die "Failed to find ISO URL at enterprise.proxmox.com/iso/"; fi
     log_info "URL: $url"
     log_debug "Downloading (~1GB, may take a few minutes)..."
     wget -q --show-progress -O pve.iso "$url"
