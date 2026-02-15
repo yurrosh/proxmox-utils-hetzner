@@ -114,7 +114,7 @@ val "Swap total"        "${SWAP_TOTAL_MB} MB"
 val "Swap used"         "$(awk '/SwapFree/{printf "%d MB", ('$SWAP_TOTAL_KB'-$2)/1024}' /proc/meminfo)"
 
 # Check for zram
-ZRAM_COUNT=$(ls /sys/block/zram* 2>/dev/null | wc -l)
+ZRAM_COUNT=$(ls -d /sys/block/zram* 2>/dev/null | wc -l)
 if [ "$ZRAM_COUNT" -gt 0 ]; then
     ZRAM_SIZE=0
     for zd in /sys/block/zram*; do
@@ -378,8 +378,9 @@ val "Max user processes"  "$(ulimit -Su 2>/dev/null)"
 
 subsect "Limits.conf (non-default entries)"
 if [ -f /etc/security/limits.conf ]; then
-    LCOUNT=$(grep -cvE '^#|^$' /etc/security/limits.conf 2>/dev/null || echo 0)
-    if [ "$LCOUNT" -gt 0 ]; then
+    LCOUNT=$(grep -cvE '^#|^$' /etc/security/limits.conf 2>/dev/null)
+    LCOUNT=${LCOUNT:-0}
+    if [ "$LCOUNT" -gt 0 ] 2>/dev/null; then
         grep -vE '^#|^$' /etc/security/limits.conf | while read -r line; do info "$line"; done
     else
         info "(empty — using defaults)"
