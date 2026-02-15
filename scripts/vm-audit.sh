@@ -229,7 +229,7 @@ lsblk -ndo NAME,SIZE,RO,MODEL 2>/dev/null | while read -r name size ro model; do
 done
 
 subsect "Disk Queue Parameters"
-for disk in /sys/block/sd* /sys/block/vd* /sys/block/nvme* 2>/dev/null; do
+for disk in /sys/block/sd* /sys/block/vd* /sys/block/nvme*; do
     [ -d "$disk" ] || continue
     name=$(basename "$disk")
     val "$name scheduler"    "$(cat "$disk/queue/scheduler" 2>/dev/null)"
