@@ -8,6 +8,8 @@ fqdn = "pve01.example.com"
 timezone = "UTC"
 country = "de"          # 2-letter ISO code
 keyboard = "en-us"
+# Proxmox VE ISO — browse https://enterprise.proxmox.com/iso/ for versions
+iso_url = "https://enterprise.proxmox.com/iso/proxmox-ve_9.1-1.iso"
 
 [network]
 # Interface name — auto-detected in rescue mode, override here if needed

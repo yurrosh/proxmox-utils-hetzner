@@ -232,6 +232,7 @@ get_inputs_interactive() {
     DNS1="185.12.64.1"
     DNS2="185.12.64.2"
     NET_SOURCE="from-dhcp"
+    ISO_URL=""
 
     # Password
     while true; do
@@ -254,6 +255,7 @@ get_inputs_from_toml() {
     TIMEZONE=$(parse_toml "$CONFIG_FILE" server timezone "UTC")
     COUNTRY=$(parse_toml "$CONFIG_FILE" server country "us")
     KEYBOARD=$(parse_toml "$CONFIG_FILE" server keyboard "en-us")
+    ISO_URL=$(parse_toml "$CONFIG_FILE" server iso_url "")
 
     INTERFACE_NAME=$(parse_toml "$CONFIG_FILE" network interface "$DEFAULT_INTERFACE")
     DNS1=$(parse_toml "$CONFIG_FILE" network dns1 "185.12.64.1")
@@ -486,39 +488,45 @@ build_uefi_args() {
 }
 
 get_latest_iso_url() {
+    # Fallback only — prefer iso_url from TOML config
     local base="https://enterprise.proxmox.com/iso/"
-    # Auto-installer requires PVE 8.1+; filter for proxmox-ve ISOs only
     curl -s "$base" | grep -oP 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | sort -V | tail -n1 | \
         awk -v b="$base" '{print b $0}'
 }
 
 download_iso() {
     log_step "Downloading Proxmox ISO"
-    if [[ -f "pve.iso" ]]; then
-        # Check ISO version — auto-installer requires PVE 8.1+
-        local iso_ver
-        iso_ver=$(isoinfo -d -i pve.iso 2>/dev/null | grep -oP 'proxmox-ve_\K[0-9]+\.[0-9]+' || true)
-        if [[ -z "$iso_ver" ]]; then
-            iso_ver=$(strings pve.iso 2>/dev/null | grep -oP 'proxmox-ve_\K[0-9]+\.[0-9]+' | head -1 || true)
-        fi
-        log_debug "Cached ISO version: PVE ${iso_ver:-unknown}"
-        if [[ -n "$iso_ver" ]]; then
-            local major=${iso_ver%%.*}
-            local minor=${iso_ver#*.}
-            if (( major > 8 || (major == 8 && minor >= 1) )); then
-                log_ok "Cached ISO (PVE ${iso_ver}) supports auto-install"
-                return
-            fi
-        fi
-        log_warn "Cached ISO too old or unrecognized — re-downloading"
-        rm -f pve.iso pve-autoinstall.iso
+
+    local url="${ISO_URL:-}"
+    if [[ -z "$url" ]]; then
+        log_warn "No iso_url in config — scraping enterprise.proxmox.com for latest"
+        url=$(get_latest_iso_url)
+        if [[ -z "$url" ]]; then die "Failed to find ISO URL. Set iso_url in [server] config."; fi
     fi
-    local url
-    url=$(get_latest_iso_url)
-    if [[ -z "$url" ]]; then die "Failed to find ISO URL at enterprise.proxmox.com/iso/"; fi
+
+    local iso_file
+    iso_file=$(basename "$url")
+    log_info "ISO: $iso_file"
     log_info "URL: $url"
+
+    if [[ -f "pve.iso" ]]; then
+        # Check if cached ISO matches requested URL
+        local cached_name=""
+        if [[ -f ".pve-iso-url" ]]; then
+            cached_name=$(cat .pve-iso-url)
+        fi
+        if [[ "$cached_name" == "$url" ]]; then
+            log_ok "Cached ISO matches config — skipping download"
+            return
+        else
+            log_warn "Cached ISO doesn't match config — re-downloading"
+            rm -f pve.iso pve-autoinstall.iso
+        fi
+    fi
+
     log_debug "Downloading (~1GB, may take a few minutes)..."
     wget -q --show-progress -O pve.iso "$url"
+    echo "$url" > .pve-iso-url
     local iso_size
     iso_size=$(du -h pve.iso | cut -f1)
     log_ok "ISO downloaded (${iso_size})"

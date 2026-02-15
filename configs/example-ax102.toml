@@ -11,6 +11,8 @@ fqdn = "pve01.example.com"
 timezone = "UTC"
 country = "de"          # de=Falkenstein/Nürnberg, fi=Helsinki
 keyboard = "en-us"
+# Proxmox VE ISO — browse https://enterprise.proxmox.com/iso/ for versions
+iso_url = "https://enterprise.proxmox.com/iso/proxmox-ve_9.1-1.iso"
 
 [network]
 interface = "eno1"      # Auto-detected in rescue; AX102 typically eno1 or enp7s0
