@@ -610,12 +610,13 @@ install_proxmox() {
     log_warn "QEMU runs headless (no display). Output suppressed."
     echo ""
 
+    # file.locking=off required in vKVM rescue — Hetzner's host QEMU already holds locks
     local qemu_cmd="qemu-system-x86_64 \
         -enable-kvm ${uefi_args} \
         -cpu host -smp 4 -m 4096 \
         -boot d -cdrom ./pve-autoinstall.iso \
-        -drive file=${DISK1},format=raw,media=disk,if=virtio \
-        -drive file=${DISK2},format=raw,media=disk,if=virtio \
+        -drive file=${DISK1},format=raw,media=disk,if=virtio,file.locking=off \
+        -drive file=${DISK2},format=raw,media=disk,if=virtio,file.locking=off \
         -no-reboot -display none"
 
     log_info "Command: $(echo $qemu_cmd | tr -s ' ')"
@@ -669,8 +670,8 @@ boot_and_configure() {
         -cpu host -device e1000,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp::5555-:22 \
         -smp 4 -m 4096 \
-        -drive file=${DISK1},format=raw,media=disk,if=virtio \
-        -drive file=${DISK2},format=raw,media=disk,if=virtio \
+        -drive file=${DISK1},format=raw,media=disk,if=virtio,file.locking=off \
+        -drive file=${DISK2},format=raw,media=disk,if=virtio,file.locking=off \
         -display none > /tmp/qemu-configure.log 2>&1 &
     QEMU_PID=$!
 
