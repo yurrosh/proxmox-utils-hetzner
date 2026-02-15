@@ -212,7 +212,7 @@ get_inputs_interactive() {
 
     # Password
     while [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; do
-        read -s -p "Root password: " NEW_ROOT_PASSWORD < "${TTY_INPUT:-/dev/stdin}"; echo ""
+        read -s -p "Root password: " NEW_ROOT_PASSWORD < "${TTY_INPUT:-/dev/stdin}" || true; echo ""
     done
 }
 
@@ -257,7 +257,8 @@ get_inputs_from_toml() {
     if ! $DRY_RUN && [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; then
         if [[ -n "$TTY_INPUT" ]]; then
             while [[ -z "${NEW_ROOT_PASSWORD:-}" ]]; do
-                read -s -p "Root password (not in config — enter now): " NEW_ROOT_PASSWORD < "$TTY_INPUT"; echo ""
+                read -s -p "Root password (not in config — enter now): " NEW_ROOT_PASSWORD < "$TTY_INPUT" || true
+                echo ""
             done
         else
             die "Root password required but no terminal available for interactive prompt. Set root_password in config TOML."
@@ -844,7 +845,7 @@ echo -e "${CLR_RED}║  ALL DATA WILL BE DESTROYED!                         ║$
 echo -e "${CLR_RED}╚═══════════════════════════════════════════════════════╝${CLR_RESET}"
 echo ""
 if $INTERACTIVE; then
-    read -p "Type 'yes' to continue: " CONFIRM < "${TTY_INPUT:-/dev/stdin}"
+    read -p "Type 'yes' to continue: " CONFIRM < "${TTY_INPUT:-/dev/stdin}" || true
     [[ "$CONFIRM" != "yes" ]] && { echo "Aborted."; exit 0; }
 else
     echo -e "${CLR_YELLOW}Non-interactive mode — proceeding in 10 seconds...${CLR_RESET}"
@@ -874,7 +875,7 @@ if $SKIP_REBOOT; then
     log_warn "Skipping reboot (--no-reboot)"
 else
     if $INTERACTIVE; then
-        read -p "Reboot now? (y/n): " DO_REBOOT < "${TTY_INPUT:-/dev/stdin}"
+        read -p "Reboot now? (y/n): " DO_REBOOT < "${TTY_INPUT:-/dev/stdin}" || true
         [[ "$DO_REBOOT" == "y" ]] && reboot
     else
         echo -e "${CLR_YELLOW}Rebooting in 10 seconds...${CLR_RESET}"
