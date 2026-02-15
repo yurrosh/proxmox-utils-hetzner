@@ -1,0 +1,27 @@
+# Archives and backups
+*.tar.gz
+*.bak
+
+# Downloaded ISOs
+*.iso
+
+# Temporary files
+/tmp/
+*.tmp
+*.log
+
+# Personal server configs (keep only example-*.toml)
+configs/*.toml
+!configs/example*.toml
+
+# Benchmark results
+netbench_results_*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
