@@ -1,6 +1,6 @@
 # Proxmox VE Config — EXAMPLE
 # Copy this file and customize for your server.
-# Used by: pve-install-hetzner.sh (all sections) and pve-harden.sh ([hardening] + [tweaks])
+# Used by: pve-install-hetzner.sh, pve-harden.sh, pve-network.sh
 
 # ══════════════════════════════════════════════════════════════
 #  INSTALLER — used by pve-install-hetzner.sh only
@@ -55,6 +55,19 @@ f2b_findtime = 600
 f2b_maxretry = 3
 conntrack_max = 1048576
 conntrack_tcp_timeout = 28800
+
+# ══════════════════════════════════════════════════════════════
+#  NAT — used by pve-network.sh
+#  Private bridge for VMs with outbound internet via masquerade
+# ══════════════════════════════════════════════════════════════
+
+[nat]
+enabled = true
+bridge = "vmbr1"
+address = "10.10.10.1/24"      # Host gateway on the NAT bridge
+upstream = "vmbr0"              # WAN-facing bridge (masquerade target)
+dns1 = "1.1.1.1"               # For cloud-init / reference
+dns2 = "8.8.8.8"
 
 # ══════════════════════════════════════════════════════════════
 #  TWEAKS — performance optimizations (pve-harden.sh)

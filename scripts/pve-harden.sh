@@ -288,7 +288,7 @@ step 9 "Proxmox firewall"
 mkdir -p /etc/pve/firewall "/etc/pve/nodes/${HOST_S}"
 
 # Parse TCP ports from TOML array format [22, 8006] → individual rules
-FW_PORTS_CLEAN=$(echo "$FW_TCP_PORTS" | tr -d '[]' | tr ',' ' ')
+FW_PORTS_CLEAN=$(echo "$FW_TCP_PORTS" | tr -d '[]' | tr ',' ' ' | xargs)
 
 {
     echo "[OPTIONS]"
