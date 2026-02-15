@@ -106,6 +106,7 @@ warn() { echo -e "  ${CLR_YELLOW}⚠ $1${CLR_RESET}"; }
 # 1. System update
 # ===========================================================
 step 1 "System update"
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get -y dist-upgrade >/dev/null 2>&1
 ok "Packages updated (dist-upgrade)"
@@ -117,6 +118,9 @@ pveam update 2>/dev/null && ok "Appliance templates updated" || true
 step 2 "Essential packages"
 PKGS="curl wget libguestfs-tools unzip net-tools fail2ban smartmontools"
 PKGS="$PKGS libsasl2-modules unattended-upgrades at iptables-persistent"
+# Pre-seed debconf to prevent interactive prompts (iptables-persistent, postfix, etc.)
+echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | debconf-set-selections
+echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | debconf-set-selections
 apt-get install -yq $PKGS >/dev/null 2>&1
 ok "Installed: fail2ban, smartmontools, libguestfs-tools, at, ..."
 
