@@ -1,70 +1,79 @@
-# Proxmox VE Installation + Hardening Config — Template
-# Copy this file and fill in your server details.
-# Usage: bash scripts/pve-install-hetzner.sh --config configs/myserver.toml
+# Proxmox VE Config — EXAMPLE
+# Copy this file and customize for your server.
+# Used by: pve-install-hetzner.sh (all sections) and pve-harden.sh ([hardening] + [tweaks])
+
+# ══════════════════════════════════════════════════════════════
+#  INSTALLER — used by pve-install-hetzner.sh only
+# ══════════════════════════════════════════════════════════════
 
 [server]
-hostname = "pve01"
-fqdn = "pve01.example.com"
+hostname = "pve1"
+fqdn = "pve1.example.com"
 timezone = "UTC"
-country = "de"          # 2-letter ISO code
+country = "us"
 keyboard = "en-us"
-# Proxmox VE ISO — browse https://enterprise.proxmox.com/iso/ for versions
 iso_url = "https://enterprise.proxmox.com/iso/proxmox-ve_9.1-1.iso"
 
 [network]
-# Interface name — auto-detected in rescue mode, override here if needed
-interface = "eno1"
-# Set source = "from-dhcp" for auto-detect, or "from-answer" for manual
+interface = "enp7s0"
 source = "from-dhcp"
-dns1 = "185.12.64.1"    # Hetzner DNS
+dns1 = "185.12.64.1"
 dns2 = "185.12.64.2"
 search_domain = "example.com"
 
 [disk]
 filesystem = "zfs"
 zfs_raid = "raid1"
-# Physical disk paths as seen from Hetzner rescue system.
-# These are passed to QEMU as -drive arguments. Inside QEMU, the Proxmox
-# installer sees them as /dev/vda, /dev/vdb (virtio) — the name mapping
-# is handled automatically (disk-list is omitted from answer.toml).
 disk_list = ["/dev/nvme0n1", "/dev/nvme1n1"]
 
 [users]
 email = "admin@example.com"
-# root_password left empty — script will prompt interactively
 root_password = ""
 
-[hardening]
-# SSH
-permit_root_login = "prohibit-password"
+# ══════════════════════════════════════════════════════════════
+#  HARDENING — used by pve-harden.sh
+# ══════════════════════════════════════════════════════════════
 
-# ZFS ARC limits (GB) — tune based on RAM
-# Rule of thumb: min=5% of RAM, max=10% of RAM
+[hardening]
+permit_root_login = "prohibit-password"
+ssh_port = 22
 zfs_arc_min_gb = 6
 zfs_arc_max_gb = 12
-
-# SMART disk health thresholds (°C)
 smart_warn_temp = 50
 smart_crit_temp = 70
-
-# Email relay — Brevo (ex-Sendinblue) SMTP
 smtp_relay_host = "[smtp-relay.brevo.com]:587"
-smtp_user = "you@example.com"
-smtp_key = ""  # 64-char Brevo SMTP key — SET THIS
-notification_from = "noreply@example.com"
-notification_email = "admin@example.com"
-notification_author = "Proxmox pve01"
-
-# Firewall — inbound allow list
+smtp_user = ""
+smtp_key = ""
+notification_from = ""
+notification_email = ""
+notification_author = "Proxmox pve1"
 firewall_tcp_ports = [22, 8006]
 firewall_allow_icmp = true
 firewall_default_in = "DROP"
-
-# Fail2ban
-f2b_bantime = 3600      # 1 hour
-f2b_findtime = 600      # 10 minutes
+f2b_bantime = 3600
+f2b_findtime = 600
 f2b_maxretry = 3
-
-# Sysctl tunables
 conntrack_max = 1048576
-conntrack_tcp_timeout = 28800  # 8 hours
+conntrack_tcp_timeout = 28800
+
+# ══════════════════════════════════════════════════════════════
+#  TWEAKS — performance optimizations (pve-harden.sh)
+# ══════════════════════════════════════════════════════════════
+
+[tweaks]
+tcp_bbr = true
+tcp_fastopen = true
+cpu_governor = "performance"
+kernel_panic_reboot = 10
+install_pigz = true
+vzdump_ionice = 2
+vzdump_bwlimit = 0
+journal_max_size = "512M"
+fs_inotify_max_user_watches = 1048576
+fs_inotify_max_user_instances = 512
+fs_file_max = 2097152
+disable_ha_services = true
+nag_removal_method = "dpkg-hook"
+install_dark_theme = false
+tune_ksm = true
+optimize_logrotate = true
