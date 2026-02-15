@@ -487,6 +487,7 @@ build_uefi_args() {
 
 get_latest_iso_url() {
     local base="https://enterprise.proxmox.com/iso/"
+    # Auto-installer requires PVE 8.1+; filter for proxmox-ve ISOs only
     curl -s "$base" | grep -oP 'proxmox-ve_[0-9]+\.[0-9]+-[0-9]+\.iso' | sort -V | tail -n1 | \
         awk -v b="$base" '{print b $0}'
 }
@@ -494,8 +495,23 @@ get_latest_iso_url() {
 download_iso() {
     log_step "Downloading Proxmox ISO"
     if [[ -f "pve.iso" ]]; then
-        log_warn "ISO exists, skipping download (delete /root/pve.iso to force re-download)"
-        return
+        # Check ISO version — auto-installer requires PVE 8.1+
+        local iso_ver
+        iso_ver=$(isoinfo -d -i pve.iso 2>/dev/null | grep -oP 'proxmox-ve_\K[0-9]+\.[0-9]+' || true)
+        if [[ -z "$iso_ver" ]]; then
+            iso_ver=$(strings pve.iso 2>/dev/null | grep -oP 'proxmox-ve_\K[0-9]+\.[0-9]+' | head -1 || true)
+        fi
+        log_debug "Cached ISO version: PVE ${iso_ver:-unknown}"
+        if [[ -n "$iso_ver" ]]; then
+            local major=${iso_ver%%.*}
+            local minor=${iso_ver#*.}
+            if (( major > 8 || (major == 8 && minor >= 1) )); then
+                log_ok "Cached ISO (PVE ${iso_ver}) supports auto-install"
+                return
+            fi
+        fi
+        log_warn "Cached ISO too old or unrecognized — re-downloading"
+        rm -f pve.iso pve-autoinstall.iso
     fi
     local url
     url=$(get_latest_iso_url)
@@ -556,7 +572,7 @@ EOF
     echo ""
     log_info "answer.toml contents:"
     echo -e "${CLR_YELLOW}"
-    cat answer.toml
+    sed 's/^root-password = .*/root-password = "********"/' answer.toml
     echo -e "${CLR_RESET}"
     log_ok "answer.toml created (disk-list omitted — auto-discovery inside QEMU)"
 }
@@ -933,11 +949,17 @@ echo -e "${CLR_RED}╚═══════════════════�
 echo ""
 if $INTERACTIVE; then
     read -p "Type 'yes' to continue: " CONFIRM < "${TTY_INPUT:-/dev/stdin}" || true
-    [[ "$CONFIRM" != "yes" ]] && { echo "Aborted."; exit 0; }
+    if [[ "$CONFIRM" != "yes" ]]; then echo "Aborted."; exit 0; fi
 else
-    echo -e "${CLR_YELLOW}Non-interactive mode — proceeding in 10 seconds...${CLR_RESET}"
-    echo -e "${CLR_YELLOW}Press Ctrl+C to abort${CLR_RESET}"
-    sleep 10
+    # Even in non-interactive mode, require explicit confirmation for disk wipe
+    if [[ -n "$TTY_INPUT" ]]; then
+        read -p "Type 'yes' to continue: " CONFIRM < "$TTY_INPUT" || true
+        if [[ "$CONFIRM" != "yes" ]]; then echo "Aborted."; exit 0; fi
+    else
+        echo -e "${CLR_YELLOW}Non-interactive mode (no TTY) — proceeding in 10 seconds...${CLR_RESET}"
+        echo -e "${CLR_YELLOW}Press Ctrl+C to abort${CLR_RESET}"
+        sleep 10
+    fi
 fi
 
 prepare_packages
@@ -967,7 +989,7 @@ if $SKIP_REBOOT; then
 else
     if $INTERACTIVE; then
         read -p "Reboot now? (y/n): " DO_REBOOT < "${TTY_INPUT:-/dev/stdin}" || true
-        [[ "$DO_REBOOT" == "y" ]] && reboot
+        if [[ "$DO_REBOOT" == "y" ]]; then reboot; fi
     else
         echo -e "${CLR_YELLOW}Rebooting in 10 seconds...${CLR_RESET}"
         sleep 10
