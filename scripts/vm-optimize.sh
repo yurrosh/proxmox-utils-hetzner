@@ -82,54 +82,32 @@ step 2 "zram swap (compressed in-RAM swap)"
 if swapon --show 2>/dev/null | grep -q zram; then
     skip "zram swap already active"
 else
-    # Install systemd-zram-generator (cleanest method for Debian 13+)
-    if [ -f /etc/systemd/zram-generator.conf ]; then
-        skip "zram-generator config exists"
-    else
-        # Ensure zram module loads
-        modprobe zram 2>/dev/null || true
-        if ! grep -q '^zram' /etc/modules-load.d/*.conf 2>/dev/null; then
-            echo 'zram' > /etc/modules-load.d/zram.conf
-        fi
+    # Ensure zram module loads on boot
+    if ! grep -q '^zram' /etc/modules-load.d/*.conf 2>/dev/null; then
+        echo 'zram' > /etc/modules-load.d/zram.conf
+    fi
+    modprobe zram 2>/dev/null || true
 
-        # Create zram-generator config
-        # Size: ~25% of RAM, capped at 4GB, lz4 compression
-        mkdir -p /etc/systemd
-        cat > /etc/systemd/zram-generator.conf <<'ZRAM'
-[zram0]
-zram-size = min(ram / 4, 4096)
-compression-algorithm = lz4
-swap-priority = 100
-ZRAM
-
-        # If systemd-zram-generator package is available, install it
-        if apt-cache show systemd-zram-generator &>/dev/null 2>&1; then
-            apt-get install -y -qq systemd-zram-generator &>/dev/null 2>&1 || true
-            systemctl daemon-reload 2>/dev/null
-            systemctl start /dev/zram0 2>/dev/null || true
-            ok "Installed systemd-zram-generator + configured"
-        else
-            # Fallback: manual zram setup via udev rule + script
-            cat > /usr/local/sbin/setup-zram.sh <<'ZRAMSCRIPT'
+    # Setup script: 25% of RAM, max 4GB, lz4 compression
+    cat > /usr/local/sbin/setup-zram.sh <<'ZRAMSCRIPT'
 #!/bin/bash
-# Setup zram swap — called on boot
-modprobe zram num_devices=1 2>/dev/null
+modprobe zram num_devices=1 2>/dev/null || true
 MEM_KB=$(awk '/MemTotal/{print $2}' /proc/meminfo)
-# 25% of RAM, max 4GB
 ZRAM_KB=$((MEM_KB / 4))
 MAX_KB=$((4 * 1024 * 1024))
 [ "$ZRAM_KB" -gt "$MAX_KB" ] && ZRAM_KB=$MAX_KB
+echo 1 > /sys/block/zram0/reset 2>/dev/null || true
 echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || true
 echo "${ZRAM_KB}K" > /sys/block/zram0/disksize
 mkswap /dev/zram0 >/dev/null
 swapon -p 100 /dev/zram0
 ZRAMSCRIPT
-            chmod +x /usr/local/sbin/setup-zram.sh
+    chmod +x /usr/local/sbin/setup-zram.sh
 
-            # Systemd service for boot
-            cat > /etc/systemd/system/zram-swap.service <<'ZRAMSVC'
+    # Systemd service for boot
+    cat > /etc/systemd/system/zram-swap.service <<'ZRAMSVC'
 [Unit]
-Description=Configure zram swap
+Description=Configure zram swap (25% RAM, lz4)
 After=local-fs.target
 
 [Service]
@@ -140,14 +118,14 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 ZRAMSVC
-            systemctl daemon-reload
-            systemctl enable zram-swap.service &>/dev/null
-            # Start now if running (not during virt-customize)
-            if [ -d /sys/block/zram0 ] || modprobe zram 2>/dev/null; then
-                /usr/local/sbin/setup-zram.sh 2>/dev/null || true
-            fi
-            ok "Manual zram setup configured (zram-swap.service)"
-        fi
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable zram-swap.service &>/dev/null 2>&1 || true
+
+    # Start now if we're in a live system (not virt-customize chroot)
+    if [ -d /sys/block/zram0 ] && [ -d /proc/1 ]; then
+        /usr/local/sbin/setup-zram.sh 2>/dev/null && ok "zram swap active" || ok "zram configured (activates on boot)"
+    else
+        ok "zram configured (activates on boot)"
     fi
 fi
 
@@ -215,7 +193,6 @@ if lsmod 2>/dev/null | grep -q tcp_bbr; then
 else
     modprobe tcp_bbr 2>/dev/null || true
     if ! grep -q '^tcp_bbr' /etc/modules-load.d/*.conf 2>/dev/null; then
-        echo 'tcp_bbr' >> /etc/modules-load.d/zram.conf 2>/dev/null || \
         echo 'tcp_bbr' > /etc/modules-load.d/tcp-bbr.conf
     fi
     ok "tcp_bbr module loaded + persisted"
@@ -248,10 +225,9 @@ fi
 # ── 8. Cleanup ─────────────────────────────────────────────────────────
 step 8 "Final cleanup"
 # Remove old sysctl that we replaced
-if [ -f /etc/sysctl.d/99-docker-optimized.conf ]; then
-    rm -f /etc/sysctl.d/99-docker-optimized.conf
-    ok "Removed old 99-docker-optimized.conf (replaced by 99-vm-optimized.conf)"
-fi
+for OLD in /etc/sysctl.d/99-docker-optimized.conf /etc/systemd/zram-generator.conf; do
+    [ -f "$OLD" ] && { rm -f "$OLD"; ok "Removed stale $OLD"; }
+done
 
 # Truncate machine-id for template cloning
 if [ "${TEMPLATE_MODE:-}" = "1" ]; then
