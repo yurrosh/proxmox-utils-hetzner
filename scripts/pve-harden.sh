@@ -29,11 +29,16 @@ parse_toml() {
         $0==sec{s=1;next} /^\[/{s=0}
         s && $0~"^"k"[[:space:]]*=" {
             sub(/^[^=]*=[[:space:]]*/,"")
-            # Handle quoted values: extract content between quotes
-            if (match($0, /^"([^"]*)"/, m)) { print m[1]; exit }
-            if (match($0, /^'\''([^'\'']*)'\''/, m)) { print m[1]; exit }
-            # Handle arrays: extract between brackets
-            if (match($0, /^\[([^\]]*)\]/, m)) { print "[" m[1] "]"; exit }
+            # Handle double-quoted values
+            if (substr($0,1,1) == "\"") {
+                sub(/^"/,""); sub(/".*$/,""); print; exit
+            }
+            # Handle single-quoted values
+            if (substr($0,1,1) == "'\''") {
+                sub(/^'\''/,""); sub(/'\''.*$/,""); print; exit
+            }
+            # Handle arrays: keep as-is (brackets included)
+            if (/^\[/) { print; exit }
             # Unquoted: strip trailing comment and whitespace
             sub(/[[:space:]]*#.*$/, "")
             sub(/[[:space:]]+$/, "")
