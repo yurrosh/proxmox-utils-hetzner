@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # vm-audit.sh — Comprehensive VM system audit & benchmark
-# Run inside a Proxmox VM to check configs, optimizations, and performance
+# Run inside a Proxmox KVM VM to check configs, optimizations, and performance
 # Usage: bash vm-audit.sh [--bench]   (--bench runs I/O and CPU benchmarks)
-set -u   # strict vars only; no -e/-o pipefail (audit probes may legitimately fail)
+set -u
 
 # ── Colors ──────────────────────────────────────────────────────────────
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'; B='\033[0;34m'
@@ -18,8 +18,7 @@ ok()       { echo -e "  ${G}✓${N} $1"; }
 warn()     { echo -e "  ${Y}⚠${N} $1"; }
 bad()      { echo -e "  ${R}✗${N} $1"; }
 info()     { echo -e "  ${D}·${N} $1"; }
-val()      { printf "  ${B}%-32s${N} %s\n" "$1" "$2"; }
-sysval()   { local v; v=$(cat "$1" 2>/dev/null || echo "N/A"); printf "  ${B}%-32s${N} %s" "$2" "$v"; if [ -n "${3:-}" ]; then if [ "$v" = "$3" ]; then echo -e " ${G}✓${N}"; else echo -e " ${Y}(recommended: $3)${N}"; fi; else echo; fi; }
+val()      { printf "  ${B}%-34s${N} %s\n" "$1" "$2"; }
 
 check_sysctl() {
     local key="$1" recommended="${2:-}" label="${3:-$1}"
@@ -27,12 +26,24 @@ check_sysctl() {
     current=$(sysctl -n "$key" 2>/dev/null || echo "N/A")
     if [ -n "$recommended" ]; then
         if [ "$current" = "$recommended" ]; then
-            printf "  ${G}✓${N} ${B}%-42s${N} = %s\n" "$label" "$current"
+            printf "  ${G}✓${N} ${B}%-44s${N} = %s\n" "$label" "$current"
         else
-            printf "  ${Y}⚠${N} ${B}%-42s${N} = %s ${Y}(want: %s)${N}\n" "$label" "$current" "$recommended"
+            printf "  ${Y}⚠${N} ${B}%-44s${N} = %s ${Y}(want: %s)${N}\n" "$label" "$current" "$recommended"
         fi
     else
-        printf "  ${D}·${N} ${B}%-42s${N} = %s\n" "$label" "$current"
+        printf "  ${D}·${N} ${B}%-44s${N} = %s\n" "$label" "$current"
+    fi
+}
+
+# Like check_sysctl but passes if current >= recommended
+check_sysctl_min() {
+    local key="$1" minimum="$2" label="${3:-$1}"
+    local current
+    current=$(sysctl -n "$key" 2>/dev/null || echo "0")
+    if [ "$current" -ge "$minimum" ] 2>/dev/null; then
+        printf "  ${G}✓${N} ${B}%-44s${N} = %s ${D}(≥%s)${N}\n" "$label" "$current" "$minimum"
+    else
+        printf "  ${Y}⚠${N} ${B}%-44s${N} = %s ${Y}(want ≥%s)${N}\n" "$label" "$current" "$minimum"
     fi
 }
 
@@ -50,9 +61,7 @@ subsect "Virtualization"
 val "Hypervisor"        "$(systemd-detect-virt 2>/dev/null || echo 'unknown')"
 val "Machine type"      "$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo 'unknown')"
 val "BIOS vendor"       "$(cat /sys/class/dmi/id/bios_vendor 2>/dev/null || echo 'unknown')"
-val "Board"             "$(cat /sys/class/dmi/id/board_name 2>/dev/null || echo 'unknown')"
 
-# QEMU guest agent
 if systemctl is-active --quiet qemu-guest-agent 2>/dev/null; then
     ok "qemu-guest-agent: active"
 else
@@ -66,14 +75,11 @@ val "Model"             "$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | x
 val "Cores (vCPU)"      "$(nproc)"
 val "Threads/core"      "$(lscpu | awk '/Thread\(s\) per core/{print $NF}')"
 val "Sockets"           "$(lscpu | awk '/Socket\(s\)/{print $NF}')"
-val "MHz (current)"     "$(lscpu | awk '/CPU MHz/{print $NF}' | head -1)"
-val "CPU flags"         "$(grep -m1 -oP '(svm|vmx|aes|avx2?|sse4_[12]|rdrand|sha_ni)' /proc/cpuinfo | tr '\n' ' ' || echo 'N/A')"
+val "CPU flags"         "$(grep -m1 -oP '(svm|vmx|aes|avx2?|sse4_[12]|rdrand|sha_ni)' /proc/cpuinfo | sort -u | tr '\n' ' ' || echo 'N/A')"
 
 subsect "CPU Governor & Frequency"
 if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
     val "Governor"      "$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
-    val "Min freq"      "$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null || echo N/A) kHz"
-    val "Max freq"      "$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo N/A) kHz"
 else
     info "No cpufreq (host governor applies via KVM passthrough)"
 fi
@@ -84,9 +90,9 @@ if [ -d /sys/devices/system/cpu/vulnerabilities ]; then
         name=$(basename "$vuln")
         status=$(cat "$vuln" 2>/dev/null)
         case "$status" in
-            *"Not affected"*|*"Mitigation"*) printf "  ${G}✓${N} %-22s %s\n" "$name" "$status" ;;
-            *"Vulnerable"*)                  printf "  ${R}✗${N} %-22s %s\n" "$name" "$status" ;;
-            *)                               printf "  ${D}·${N} %-22s %s\n" "$name" "$status" ;;
+            *"Not affected"*|*"Mitigation"*) printf "  ${G}✓${N} %-24s %s\n" "$name" "$status" ;;
+            *"Vulnerable"*)                  printf "  ${R}✗${N} %-24s %s\n" "$name" "$status" ;;
+            *)                               printf "  ${D}·${N} %-24s %s\n" "$name" "$status" ;;
         esac
     done
 fi
@@ -107,8 +113,28 @@ val "Buffers+Cached"    "$(awk '/^Buffers/{b=$2} /^Cached:/{c=$2} END{printf "%d
 val "Swap total"        "${SWAP_TOTAL_MB} MB"
 val "Swap used"         "$(awk '/SwapFree/{printf "%d MB", ('$SWAP_TOTAL_KB'-$2)/1024}' /proc/meminfo)"
 
-if [ "$SWAP_TOTAL_KB" -eq 0 ]; then
-    warn "No swap configured (risky for Docker workloads — OOM killer will be aggressive)"
+# Check for zram
+ZRAM_COUNT=$(ls /sys/block/zram* 2>/dev/null | wc -l)
+if [ "$ZRAM_COUNT" -gt 0 ]; then
+    ZRAM_SIZE=0
+    for zd in /sys/block/zram*; do
+        sz=$(cat "$zd/disksize" 2>/dev/null || echo 0)
+        ZRAM_SIZE=$((ZRAM_SIZE + sz))
+    done
+    ok "zram swap: ${ZRAM_COUNT} device(s), $((ZRAM_SIZE / 1048576)) MB"
+    # Show compression stats
+    for zd in /sys/block/zram*; do
+        name=$(basename "$zd")
+        if [ -f "$zd/mm_stat" ]; then
+            read -r orig compr mem _ _ _ _ < "$zd/mm_stat"
+            if [ "$compr" -gt 0 ] 2>/dev/null; then
+                ratio=$(awk "BEGIN{printf \"%.1f\", $orig/$compr}")
+                info "$name: ${ratio}:1 compression, $(($mem / 1048576)) MB used"
+            fi
+        fi
+    done
+elif [ "$SWAP_TOTAL_KB" -eq 0 ]; then
+    warn "No swap configured (risky for Docker — OOM killer has no buffer)"
 else
     ok "Swap present: ${SWAP_TOTAL_MB} MB"
 fi
@@ -116,24 +142,14 @@ fi
 subsect "Balloon Driver"
 if lsmod 2>/dev/null | grep -q virtio_balloon; then
     ok "virtio_balloon loaded"
-    if [ -f /sys/devices/system/memory/auto_online_blocks ]; then
-        val "Memory auto-online"  "$(cat /sys/devices/system/memory/auto_online_blocks)"
-    fi
 else
     info "No balloon driver (fixed RAM allocation)"
 fi
 
 subsect "Hugepages"
-HP_TOTAL=$(awk '/HugePages_Total/{print $2}' /proc/meminfo)
-HP_FREE=$(awk '/HugePages_Free/{print $2}' /proc/meminfo)
-HP_SIZE=$(awk '/Hugepagesize/{print $2}' /proc/meminfo)
 THP=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo "N/A")
-
-val "HugePages total"   "$HP_TOTAL"
-val "HugePages free"    "$HP_FREE"
-val "Hugepage size"     "${HP_SIZE} kB"
+val "HugePages total"   "$(awk '/HugePages_Total/{print $2}' /proc/meminfo)"
 val "Transparent HP"    "$THP"
-
 if echo "$THP" | grep -q '\[always\]'; then
     ok "THP=always (good default for general workloads)"
 elif echo "$THP" | grep -q '\[madvise\]'; then
@@ -143,10 +159,9 @@ elif echo "$THP" | grep -q '\[never\]'; then
 fi
 
 subsect "OOM Configuration"
-val "vm.oom_kill_allocating_task" "$(sysctl -n vm.oom_kill_allocating_task 2>/dev/null)"
-val "vm.panic_on_oom"            "$(sysctl -n vm.panic_on_oom 2>/dev/null)"
 val "vm.overcommit_memory"       "$(sysctl -n vm.overcommit_memory 2>/dev/null)"
 val "vm.overcommit_ratio"        "$(sysctl -n vm.overcommit_ratio 2>/dev/null)"
+val "vm.panic_on_oom"            "$(sysctl -n vm.panic_on_oom 2>/dev/null)"
 
 # ════════════════════════════════════════════════════════════════════════
 section "4. SYSCTL TUNING"
@@ -158,7 +173,7 @@ check_sysctl vm.dirty_background_ratio  "5"
 check_sysctl vm.vfs_cache_pressure      "50"
 check_sysctl vm.min_free_kbytes         ""
 check_sysctl vm.zone_reclaim_mode       "0"
-check_sysctl vm.max_map_count           "262144"    "vm.max_map_count (ES/Docker needs ≥262144)"
+check_sysctl_min vm.max_map_count       262144  "vm.max_map_count (ES/Docker needs ≥262144)"
 
 subsect "Network — Core"
 check_sysctl net.core.somaxconn                 "65535"
@@ -167,7 +182,6 @@ check_sysctl net.core.rmem_max                  "16777216"
 check_sysctl net.core.wmem_max                  "16777216"
 check_sysctl net.core.rmem_default              ""
 check_sysctl net.core.wmem_default              ""
-check_sysctl net.core.optmem_max                ""
 
 subsect "Network — TCP"
 check_sysctl net.ipv4.tcp_max_syn_backlog       "65535"
@@ -186,7 +200,6 @@ if [ "$TCP_CC" = "bbr" ]; then
 else
     warn "TCP congestion: $TCP_CC (bbr recommended)"
 fi
-
 QDISC=$(sysctl -n net.core.default_qdisc 2>/dev/null)
 if [ "$QDISC" = "fq" ]; then
     ok "Queue discipline: fq"
@@ -199,10 +212,10 @@ check_sysctl net.ipv4.tcp_rmem ""
 check_sysctl net.ipv4.tcp_wmem ""
 
 subsect "Network — Security"
-check_sysctl net.ipv4.conf.all.rp_filter        "1"
-check_sysctl net.ipv4.conf.default.rp_filter     "1"
-check_sysctl net.ipv4.icmp_echo_ignore_broadcasts "1"
-check_sysctl net.ipv4.conf.all.accept_redirects   "0"
+check_sysctl net.ipv4.conf.all.rp_filter          "1"
+check_sysctl net.ipv4.conf.default.rp_filter       "1"
+check_sysctl net.ipv4.icmp_echo_ignore_broadcasts  "1"
+check_sysctl net.ipv4.conf.all.accept_redirects    "0"
 check_sysctl net.ipv4.conf.all.send_redirects      "0"
 
 subsect "Network — IPv6"
@@ -210,33 +223,35 @@ check_sysctl net.ipv6.conf.all.disable_ipv6 ""
 check_sysctl net.ipv6.conf.all.forwarding   ""
 
 subsect "Filesystem"
-check_sysctl fs.file-max           ""
-check_sysctl fs.inotify.max_user_watches   "524288"  "fs.inotify.max_user_watches (Docker/Node needs ≥524288)"
-check_sysctl fs.inotify.max_user_instances ""
-check_sysctl fs.aio-max-nr        ""
+check_sysctl fs.file-max               ""
+check_sysctl_min fs.inotify.max_user_watches  524288  "fs.inotify.max_user_watches (≥524288)"
+check_sysctl fs.inotify.max_user_instances    ""
+check_sysctl fs.aio-max-nr                    ""
 
 # ════════════════════════════════════════════════════════════════════════
 section "5. DISK & I/O"
 # ════════════════════════════════════════════════════════════════════════
-echo -e "  ${D}Device           Size   RO  Sched      FS       Mount${N}"
-lsblk -ndo NAME,SIZE,RO,MODEL 2>/dev/null | while read -r name size ro model; do
-    sched_raw=$(cat "/sys/block/$name/queue/scheduler" 2>/dev/null || echo "?")
+echo -e "  ${D}Device           Size   Rot    Sched       FS        Mount${N}"
+lsblk -ndo NAME,SIZE 2>/dev/null | while read -r name size; do
+    [[ "$name" == zram* ]] && continue
     rota=$(cat "/sys/block/$name/queue/rotational" 2>/dev/null || echo "?")
+    sched_raw=$(cat "/sys/block/$name/queue/scheduler" 2>/dev/null || echo "?")
     mp=$(lsblk -nro MOUNTPOINT "/dev/$name" 2>/dev/null | grep -v '^$' | head -1 || true)
     fs=$(lsblk -nro FSTYPE "/dev/$name" 2>/dev/null | grep -v '^$' | head -1 || true)
-    [ -z "$mp" ] && { mp=$(lsblk -nro MOUNTPOINT "/dev/${name}"* 2>/dev/null | grep -v '^$' | head -1 || true); fs=$(lsblk -nro FSTYPE "/dev/${name}"* 2>/dev/null | grep -v '^$' | head -1 || true); }
-    printf "  %-16s %-6s %-3s %-10s %-8s %s\n" "$name" "$size" "rota=$rota" "$sched_raw" "${fs:-—}" "${mp:-—}"
+    if [ -z "$mp" ]; then
+        mp=$(lsblk -nro MOUNTPOINT "/dev/${name}"?* 2>/dev/null | grep -v '^$' | head -1 || true)
+        fs=$(lsblk -nro FSTYPE "/dev/${name}"?* 2>/dev/null | grep -v '^$' | head -1 || true)
+    fi
+    printf "  %-16s %-6s rota=%-2s %-11s %-9s %s\n" "$name" "$size" "$rota" "$sched_raw" "${fs:-—}" "${mp:-—}"
 done
 
-subsect "Disk Queue Parameters"
+subsect "Disk Queue Parameters (primary)"
 for disk in /sys/block/sd* /sys/block/vd* /sys/block/nvme*; do
     [ -d "$disk" ] || continue
     name=$(basename "$disk")
-    val "$name scheduler"    "$(cat "$disk/queue/scheduler" 2>/dev/null)"
-    val "$name nr_requests"  "$(cat "$disk/queue/nr_requests" 2>/dev/null)"
-    val "$name read_ahead_kb" "$(cat "$disk/queue/read_ahead_kb" 2>/dev/null)"
-    val "$name rotational"   "$(cat "$disk/queue/rotational" 2>/dev/null)"
-    val "$name discard_max"  "$(cat "$disk/queue/discard_max_bytes" 2>/dev/null)"
+    val "$name nr_requests"   "$(cat "$disk/queue/nr_requests" 2>/dev/null)"
+    val "$name read_ahead_kb"  "$(cat "$disk/queue/read_ahead_kb" 2>/dev/null)"
+    val "$name discard_max"    "$(cat "$disk/queue/discard_max_bytes" 2>/dev/null)"
 done
 
 subsect "Filesystem Usage"
@@ -248,17 +263,14 @@ mount | grep -E '^/dev/' | while read -r line; do
     mp=$(echo "$line" | awk '{print $3}')
     fs=$(echo "$line" | awk '{print $5}')
     opts=$(echo "$line" | grep -oP '\(.*\)')
-    printf "  %-12s %-8s %-8s %s\n" "$dev" "$mp" "$fs" "$opts"
+    printf "  %-14s %-10s %-6s %s\n" "$dev" "$mp" "$fs" "$opts"
 done
 
 subsect "TRIM / Discard"
-if command -v fstrim &>/dev/null; then
-    # Check fstrim timer
-    if systemctl is-enabled fstrim.timer &>/dev/null; then
-        ok "fstrim.timer: $(systemctl is-enabled fstrim.timer 2>/dev/null)"
-    else
-        warn "fstrim.timer not enabled (enable for SSD TRIM)"
-    fi
+if systemctl is-enabled fstrim.timer &>/dev/null 2>&1; then
+    ok "fstrim.timer: enabled"
+else
+    warn "fstrim.timer not enabled (enable for SSD TRIM)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════
@@ -266,17 +278,15 @@ section "6. NETWORK INTERFACES"
 # ════════════════════════════════════════════════════════════════════════
 ip -4 addr show | awk '/^[0-9]+:/{iface=$2} /inet /{print "  " iface " " $2}'
 echo ""
-# Default route
-val "Default gateway"    "$(ip route show default 2>/dev/null | awk '{print $3, "via", $5}')"
-val "DNS"               "$(grep nameserver /etc/resolv.conf 2>/dev/null | awk '{printf "%s ", $2}')"
+val "Default gateway"  "$(ip route show default 2>/dev/null | awk '{print $3, "via", $5}')"
+val "DNS"              "$(awk '/^nameserver/{printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)"
 
 subsect "Interface Details"
 for iface in $(ls /sys/class/net/ | grep -v lo); do
     driver=$(readlink "/sys/class/net/$iface/device/driver" 2>/dev/null | xargs basename 2>/dev/null || echo "?")
-    speed=$(cat "/sys/class/net/$iface/speed" 2>/dev/null || echo "?")
     mtu=$(cat "/sys/class/net/$iface/mtu" 2>/dev/null || echo "?")
     tx_qlen=$(cat "/sys/class/net/$iface/tx_queue_len" 2>/dev/null || echo "?")
-    printf "  ${B}%-10s${N} driver=%-12s speed=%-8s mtu=%-6s txqlen=%s\n" "$iface" "$driver" "${speed}Mbps" "$mtu" "$tx_qlen"
+    printf "  ${B}%-12s${N} driver=%-14s mtu=%-6s txqlen=%s\n" "$iface" "$driver" "$mtu" "$tx_qlen"
 done
 
 # ════════════════════════════════════════════════════════════════════════
@@ -289,7 +299,7 @@ if command -v docker &>/dev/null; then
     val "Cgroup driver"      "$(docker info 2>/dev/null | awk '/Cgroup Driver/{print $NF}')"
     val "Logging driver"     "$(docker info 2>/dev/null | awk '/Logging Driver/{print $NF}')"
     val "Runtime"            "$(docker info 2>/dev/null | awk '/Default Runtime/{print $NF}')"
-    val "Containers"         "$(docker info 2>/dev/null | awk '/Containers:/{print $NF}')"
+    val "Containers"         "$(docker info 2>/dev/null | awk '/^  Containers:/{print $NF}')"
     val "Images"             "$(docker info 2>/dev/null | awk '/Images:/{print $NF}')"
 
     if systemctl is-active --quiet docker; then
@@ -298,19 +308,22 @@ if command -v docker &>/dev/null; then
         bad "Docker daemon: not running"
     fi
 
-    # Docker daemon.json
     if [ -f /etc/docker/daemon.json ]; then
         subsect "daemon.json"
         cat /etc/docker/daemon.json 2>/dev/null
+        echo ""
+        # Check log rotation in daemon.json
+        if grep -q '"max-size"' /etc/docker/daemon.json 2>/dev/null; then
+            ok "Log rotation configured in daemon.json"
+        else
+            warn "daemon.json exists but no log rotation (max-size) configured"
+        fi
     else
         info "No /etc/docker/daemon.json (using defaults)"
-    fi
-
-    # Check Docker log rotation
-    LOG_DRIVER=$(docker info 2>/dev/null | awk '/Logging Driver/{print $NF}')
-    if [ "$LOG_DRIVER" = "json-file" ]; then
-        warn "Docker logging: json-file without size limits — logs can fill disk"
-        info "Recommend: add log-opts in daemon.json: max-size=10m, max-file=3"
+        LOG_DRIVER=$(docker info 2>/dev/null | awk '/Logging Driver/{print $NF}')
+        if [ "$LOG_DRIVER" = "json-file" ]; then
+            warn "json-file logging with no size limits — logs can fill disk"
+        fi
     fi
 else
     bad "Docker not installed"
@@ -332,16 +345,9 @@ fi
 subsect "Firewall"
 if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active"; then
     ok "UFW: active"
-    ufw status numbered 2>/dev/null | head -15
-elif command -v iptables &>/dev/null; then
-    INPUT_RULES=$(iptables -L INPUT --line-numbers 2>/dev/null | wc -l)
-    val "iptables INPUT rules" "$((INPUT_RULES - 2))"
-    if command -v nft &>/dev/null; then
-        NFT_RULES=$(nft list ruleset 2>/dev/null | wc -l)
-        val "nftables rules" "$NFT_RULES"
-    fi
-else
-    warn "No firewall detected"
+elif command -v nft &>/dev/null; then
+    NFT_RULES=$(nft list ruleset 2>/dev/null | wc -l)
+    val "nftables rules" "$NFT_RULES"
 fi
 
 subsect "AppArmor / SELinux"
@@ -351,7 +357,7 @@ if command -v aa-status &>/dev/null; then
 elif command -v getenforce &>/dev/null; then
     val "SELinux" "$(getenforce 2>/dev/null)"
 else
-    info "No MAC framework (AppArmor/SELinux)"
+    info "No MAC framework"
 fi
 
 subsect "Automatic Updates"
@@ -369,24 +375,21 @@ val "fs.file-max"        "$(sysctl -n fs.file-max 2>/dev/null)"
 val "Open files (soft)"  "$(ulimit -Sn 2>/dev/null)"
 val "Open files (hard)"  "$(ulimit -Hn 2>/dev/null)"
 val "Max user processes"  "$(ulimit -Su 2>/dev/null)"
-val "Max locked memory"   "$(ulimit -Sl 2>/dev/null) kB"
 
 subsect "Limits.conf (non-default entries)"
 if [ -f /etc/security/limits.conf ]; then
-    grep -v '^#' /etc/security/limits.conf 2>/dev/null | grep -v '^$' | while read -r line; do
-        info "$line"
-    done
-    LIMITS_COUNT=$(grep -v '^#' /etc/security/limits.conf 2>/dev/null | grep -v '^$' | wc -l)
-    [ "$LIMITS_COUNT" -eq 0 ] && info "(empty — using defaults)"
+    LCOUNT=$(grep -cvE '^#|^$' /etc/security/limits.conf 2>/dev/null || echo 0)
+    if [ "$LCOUNT" -gt 0 ]; then
+        grep -vE '^#|^$' /etc/security/limits.conf | while read -r line; do info "$line"; done
+    else
+        info "(empty — using defaults)"
+    fi
 fi
-
-# Check limits.d
-if [ -d /etc/security/limits.d ] && ls /etc/security/limits.d/*.conf &>/dev/null 2>&1; then
+if [ -d /etc/security/limits.d ]; then
     for f in /etc/security/limits.d/*.conf; do
+        [ -f "$f" ] || continue
         info "$(basename "$f"):"
-        grep -v '^#' "$f" | grep -v '^$' | while read -r line; do
-            info "  $line"
-        done
+        grep -vE '^#|^$' "$f" | while read -r line; do info "  $line"; done
     done
 fi
 
@@ -400,15 +403,14 @@ section "10. SERVICES & BOOT"
 subsect "Enabled Services (non-default)"
 systemctl list-unit-files --type=service --state=enabled 2>/dev/null | \
     grep -v '@\|dbus\|systemd\|getty\|networking\|ssh\|cron\|rsyslog\|logrotate\|cloud-' | \
-    grep enabled | while read -r svc state _; do
-    info "$svc"
-done
+    grep enabled | while read -r svc _; do info "$svc"; done
 
 subsect "Failed Services"
-FAILED=$(systemctl --failed --no-pager 2>/dev/null | grep -c 'failed' || echo 0)
-if [ "$FAILED" -gt 0 ]; then
+FAILED=$(systemctl --failed --no-pager --no-legend 2>/dev/null | grep -c 'failed' || true)
+FAILED=${FAILED:-0}
+if [ "$FAILED" -gt 0 ] 2>/dev/null; then
     bad "$FAILED failed service(s):"
-    systemctl --failed --no-pager 2>/dev/null | grep 'failed'
+    systemctl --failed --no-pager --no-legend 2>/dev/null
 else
     ok "No failed services"
 fi
@@ -417,9 +419,7 @@ subsect "Boot Performance"
 if command -v systemd-analyze &>/dev/null; then
     val "Boot time" "$(systemd-analyze 2>/dev/null | head -1)"
     echo -e "  ${D}Slowest units:${N}"
-    systemd-analyze blame 2>/dev/null | head -5 | while read -r line; do
-        info "$line"
-    done
+    systemd-analyze blame 2>/dev/null | head -5 | while read -r line; do info "$line"; done
 fi
 
 # ════════════════════════════════════════════════════════════════════════
@@ -427,13 +427,8 @@ section "11. CLOUD-INIT"
 # ════════════════════════════════════════════════════════════════════════
 if command -v cloud-init &>/dev/null; then
     val "Cloud-init version" "$(cloud-init --version 2>&1 | awk '{print $NF}')"
-    CI_STATUS=$(cloud-init status 2>/dev/null | awk '{print $NF}')
-    if [ "$CI_STATUS" = "done" ]; then
-        ok "Status: done"
-    else
-        warn "Status: $CI_STATUS"
-    fi
-    val "Datasource" "$(cloud-init query ds 2>/dev/null | head -1 || echo 'N/A')"
+    CI_STATUS=$(cloud-init status 2>/dev/null | awk '/status:/{print $NF}')
+    if [ "$CI_STATUS" = "done" ]; then ok "Status: done"; else warn "Status: ${CI_STATUS:-unknown}"; fi
 else
     info "cloud-init not installed"
 fi
@@ -441,13 +436,10 @@ fi
 # ════════════════════════════════════════════════════════════════════════
 section "12. ENTROPY & RANDOM"
 # ════════════════════════════════════════════════════════════════════════
-val "Available entropy"  "$(cat /proc/sys/kernel/random/entropy_avail 2>/dev/null) bits"
+ENTROPY=$(cat /proc/sys/kernel/random/entropy_avail 2>/dev/null || echo 0)
+val "Available entropy"  "$ENTROPY bits"
 val "Pool size"          "$(cat /proc/sys/kernel/random/poolsize 2>/dev/null) bits"
-if [ "$(cat /proc/sys/kernel/random/entropy_avail 2>/dev/null)" -lt 256 ] 2>/dev/null; then
-    warn "Low entropy — consider installing haveged or rng-tools"
-else
-    ok "Entropy sufficient"
-fi
+if [ "$ENTROPY" -ge 256 ] 2>/dev/null; then ok "Entropy sufficient"; else warn "Low entropy"; fi
 if lsmod 2>/dev/null | grep -q virtio_rng; then
     ok "virtio-rng: loaded (hardware RNG from host)"
 else
@@ -455,12 +447,11 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════════════
-section "13. SYSCTL DUMP (all non-default)"
+section "13. SYSCTL DUMP (custom files)"
 # ════════════════════════════════════════════════════════════════════════
-subsect "Custom sysctl files"
 for f in /etc/sysctl.conf /etc/sysctl.d/*.conf; do
     [ -f "$f" ] || continue
-    CONTENT=$(grep -v '^#' "$f" | grep -v '^$')
+    CONTENT=$(grep -vE '^#|^$' "$f" 2>/dev/null)
     if [ -n "$CONTENT" ]; then
         echo -e "  ${C}$f${N}"
         echo "$CONTENT" | while read -r line; do info "$line"; done
@@ -471,60 +462,69 @@ done
 section "14. SUMMARY & RECOMMENDATIONS"
 # ════════════════════════════════════════════════════════════════════════
 echo ""
-echo -e "${W}Checking for common optimizations...${N}"
-echo ""
-
-# Collect recommendations
 RECS=()
 
-# Swap
-[ "$SWAP_TOTAL_KB" -eq 0 ] && RECS+=("Create swap (1-2GB) or enable zram for OOM protection")
+# Swap / zram
+if [ "$SWAP_TOTAL_KB" -eq 0 ] && [ "$ZRAM_COUNT" -eq 0 ] 2>/dev/null; then
+    RECS+=("Enable zram swap for OOM protection")
+fi
 
 # Swappiness
-SW=$(sysctl -n vm.swappiness 2>/dev/null)
+SW=$(sysctl -n vm.swappiness 2>/dev/null || echo 0)
 [ "$SW" -gt 30 ] 2>/dev/null && RECS+=("Lower vm.swappiness to 10 (current: $SW)")
 
 # BBR
-[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" != "bbr" ] && RECS+=("Enable TCP BBR: net.ipv4.tcp_congestion_control=bbr")
+[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" != "bbr" ] && \
+    RECS+=("Enable TCP BBR: net.ipv4.tcp_congestion_control=bbr")
+
+# Dirty ratios
+DR=$(sysctl -n vm.dirty_ratio 2>/dev/null || echo 0)
+[ "$DR" -gt 20 ] 2>/dev/null && RECS+=("Lower vm.dirty_ratio to 15 (current: $DR)")
+
+DBR=$(sysctl -n vm.dirty_background_ratio 2>/dev/null || echo 0)
+[ "$DBR" -gt 5 ] 2>/dev/null && RECS+=("Lower vm.dirty_background_ratio to 5 (current: $DBR)")
+
+# vfs_cache_pressure
+VCP=$(sysctl -n vm.vfs_cache_pressure 2>/dev/null || echo 100)
+[ "$VCP" -gt 50 ] 2>/dev/null && RECS+=("Lower vm.vfs_cache_pressure to 50 (current: $VCP)")
 
 # somaxconn
-[ "$(sysctl -n net.core.somaxconn 2>/dev/null)" -lt 4096 ] 2>/dev/null && RECS+=("Increase net.core.somaxconn (current: $(sysctl -n net.core.somaxconn), want: 65535)")
+SMC=$(sysctl -n net.core.somaxconn 2>/dev/null || echo 0)
+[ "$SMC" -lt 4096 ] 2>/dev/null && RECS+=("Increase net.core.somaxconn to 65535 (current: $SMC)")
 
-# file-max / inotify
-[ "$(sysctl -n fs.inotify.max_user_watches 2>/dev/null)" -lt 524288 ] 2>/dev/null && RECS+=("Increase fs.inotify.max_user_watches to 524288")
-
-# max_map_count (Elasticsearch / Java)
-[ "$(sysctl -n vm.max_map_count 2>/dev/null)" -lt 262144 ] 2>/dev/null && RECS+=("Increase vm.max_map_count to 262144")
+# inotify
+INW=$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || echo 0)
+[ "$INW" -lt 524288 ] 2>/dev/null && RECS+=("Increase fs.inotify.max_user_watches to 524288")
 
 # Docker log rotation
-if command -v docker &>/dev/null; then
-    LD=$(docker info 2>/dev/null | awk '/Logging Driver/{print $NF}')
-    if [ "$LD" = "json-file" ] && [ ! -f /etc/docker/daemon.json ]; then
-        RECS+=("Configure Docker log rotation in /etc/docker/daemon.json")
-    fi
+if command -v docker &>/dev/null && [ -f /etc/docker/daemon.json ]; then
+    grep -q '"max-size"' /etc/docker/daemon.json 2>/dev/null || \
+        RECS+=("Configure Docker log rotation in daemon.json")
+elif command -v docker &>/dev/null; then
+    RECS+=("Create /etc/docker/daemon.json with log rotation")
 fi
 
 # fstrim
-if ! systemctl is-enabled fstrim.timer &>/dev/null 2>&1; then
-    RECS+=("Enable fstrim.timer for SSD TRIM support")
-fi
+systemctl is-enabled fstrim.timer &>/dev/null 2>&1 || \
+    RECS+=("Enable fstrim.timer for SSD TRIM")
 
-# THP
-THP_CUR=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)
-echo "$THP_CUR" | grep -q '\[never\]' && RECS+=("Set THP to madvise: echo madvise > /sys/kernel/mm/transparent_hugepage/enabled")
+# rp_filter
+[ "$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null)" != "1" ] && \
+    RECS+=("Set net.ipv4.conf.all.rp_filter=1 (reverse-path filtering)")
 
-# Dirty ratios
-DR=$(sysctl -n vm.dirty_ratio 2>/dev/null)
-[ "$DR" -gt 20 ] 2>/dev/null && RECS+=("Lower vm.dirty_ratio to 15 (current: $DR)")
+# send_redirects
+[ "$(sysctl -n net.ipv4.conf.all.send_redirects 2>/dev/null)" != "0" ] && \
+    RECS+=("Set net.ipv4.conf.all.send_redirects=0")
 
-# Print recommendations
 if [ ${#RECS[@]} -eq 0 ]; then
-    ok "No critical optimizations needed"
+    ok "All checks passed — no optimizations needed"
 else
     echo -e "  ${Y}Found ${#RECS[@]} recommendation(s):${N}"
     for i in "${!RECS[@]}"; do
         echo -e "  ${Y}$((i+1)).${N} ${RECS[$i]}"
     done
+    echo ""
+    info "Run vm-optimize.sh to apply all recommended tunings"
 fi
 
 # ════════════════════════════════════════════════════════════════════════
@@ -533,12 +533,15 @@ fi
 if $RUN_BENCH; then
 
 section "B1. CPU BENCHMARK"
-# Quick CPU test with dd + openssl (always available)
-subsect "Single-core: SHA256 hashing (10s)"
-HASH_OPS=$(timeout 10 openssl speed -seconds 10 sha256 2>/dev/null | awk '/sha256/{print $NF}')
-val "SHA256 throughput" "${HASH_OPS:-N/A}"
 
-# dd-based CPU: compress /dev/zero
+subsect "Single-core: SHA256 hashing (10s)"
+HASH_LINE=$(openssl speed -seconds 10 -evp sha256 2>/dev/null | grep -i 'sha256' | tail -1)
+if [ -n "$HASH_LINE" ]; then
+    val "SHA256" "$HASH_LINE"
+else
+    val "SHA256 throughput" "N/A (openssl speed failed)"
+fi
+
 subsect "Single-core: gzip compress (256MB /dev/zero)"
 CPU_START=$(date +%s%N)
 dd if=/dev/zero bs=1M count=256 2>/dev/null | gzip > /dev/null
@@ -553,10 +556,10 @@ if command -v sysbench &>/dev/null; then
 
     CORES=$(nproc)
     subsect "sysbench cpu (all ${CORES} threads, 10s)"
-    EVENTS_MT=$(sysbench cpu --cpu-max-prime=20000 --threads=$CORES --time=10 run 2>/dev/null | awk '/total number of events/{print $NF}')
+    EVENTS_MT=$(sysbench cpu --cpu-max-prime=20000 --threads="$CORES" --time=10 run 2>/dev/null | awk '/total number of events/{print $NF}')
     val "Events/10s (${CORES}T)" "$EVENTS_MT"
 else
-    warn "sysbench not installed — install with: apt install sysbench"
+    warn "sysbench not installed — apt install sysbench"
 fi
 
 section "B2. MEMORY BENCHMARK"
@@ -566,8 +569,8 @@ val "Memory bandwidth" "$(echo "$MEM_RESULT" | grep -oP '[0-9.]+ [GM]B/s' || ech
 
 if command -v sysbench &>/dev/null; then
     subsect "sysbench memory (sequential write, 10s)"
-    MEM_OPS=$(sysbench memory --memory-block-size=1M --memory-total-size=100G --memory-oper=write --threads=1 --time=10 run 2>/dev/null | awk '/transferred/{print $0}')
-    val "Memory write" "$MEM_OPS"
+    MEM_LINE=$(sysbench memory --memory-block-size=1M --memory-total-size=100G --memory-oper=write --threads=1 --time=10 run 2>/dev/null | grep 'transferred')
+    val "Memory write" "$MEM_LINE"
 fi
 
 section "B3. DISK I/O BENCHMARK"
@@ -583,40 +586,45 @@ echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 READ_RESULT=$(dd if="${BENCH_DIR}/testfile" of=/dev/null bs=1M count=1024 iflag=direct 2>&1 | tail -1)
 val "Seq read" "$(echo "$READ_RESULT" | grep -oP '[0-9.]+ [GM]B/s' || echo "$READ_RESULT")"
 
-subsect "Random 4K write (fdatasync, IOPS)"
+subsect "Random 4K write (fdatasync, 10k blocks)"
 RAND_RESULT=$(dd if=/dev/zero of="${BENCH_DIR}/4ktest" bs=4k count=10000 conv=fdatasync oflag=direct 2>&1 | tail -1)
 val "4K write" "$(echo "$RAND_RESULT" | grep -oP '[0-9.]+ [kMG]B/s' || echo "$RAND_RESULT")"
 
 if command -v sysbench &>/dev/null; then
     subsect "sysbench fileio (random r/w, 10s)"
-    sysbench fileio --file-total-size=512M prepare --file-test-mode=rndrw &>/dev/null
-    FIO_RESULT=$(sysbench fileio --file-total-size=512M --file-test-mode=rndrw --time=10 --file-extra-flags=direct run 2>/dev/null)
-    FIO_READ=$(echo "$FIO_RESULT" | awk '/read, MiB/{print $0}')
-    FIO_WRITE=$(echo "$FIO_RESULT" | awk '/written, MiB/{print $0}')
-    FIO_IOPS=$(echo "$FIO_RESULT" | awk '/IOPS/{print $0}' | tail -1)
-    val "Random read"  "$FIO_READ"
-    val "Random write" "$FIO_WRITE"
-    val "IOPS"         "$FIO_IOPS"
-    sysbench fileio --file-total-size=512M cleanup &>/dev/null
+    (cd "$BENCH_DIR" && sysbench fileio --file-total-size=512M prepare --file-test-mode=rndrw &>/dev/null)
+    FIO_RESULT=$(cd "$BENCH_DIR" && sysbench fileio --file-total-size=512M --file-test-mode=rndrw --time=10 --file-extra-flags=direct run 2>/dev/null)
+    val "Random read"  "$(echo "$FIO_RESULT" | awk '/read, MiB/{print}')"
+    val "Random write" "$(echo "$FIO_RESULT" | awk '/written, MiB/{print}')"
+    val "IOPS (r/w)"   "$(echo "$FIO_RESULT" | awk '/reads\/s.*writes/{print}')"
+    (cd "$BENCH_DIR" && sysbench fileio --file-total-size=512M cleanup &>/dev/null)
 fi
 
 rm -rf "$BENCH_DIR"
 
 section "B4. NETWORK BENCHMARK"
-subsect "Download speed (Hetzner mirror)"
-DL_RESULT=$(curl -so /dev/null -w '%{speed_download}' --connect-timeout 5 --max-time 15 http://speed.hetzner.de/100MB.bin 2>/dev/null || echo "0")
+subsect "Download speed (Hetzner speed test)"
+# Try HTTPS first, fall back to HTTP
+DL_RESULT=$(curl -so /dev/null -w '%{speed_download}' --connect-timeout 5 --max-time 20 \
+    https://speed.hetzner.de/100MB.bin 2>/dev/null || \
+    curl -so /dev/null -w '%{speed_download}' --connect-timeout 5 --max-time 20 \
+    http://ash.speedtest.clouvider.net/backend/garbage.php?r=0.1&ckSize=100 2>/dev/null || echo "0")
 DL_MBPS=$(echo "$DL_RESULT" | awk '{printf "%.1f MB/s (%.0f Mbit/s)", $1/1048576, $1*8/1048576}')
-val "Download" "$DL_MBPS"
+if echo "$DL_RESULT" | awk '{exit ($1 < 1000) ? 0 : 1}'; then
+    val "Download" "FAILED (NAT or DNS issue — try from host)"
+else
+    val "Download" "$DL_MBPS"
+fi
 
 subsect "Latency"
-for target in 1.1.1.1 8.8.8.8 speed.hetzner.de; do
+for target in 1.1.1.1 8.8.8.8; do
     RTT=$(ping -c3 -W2 "$target" 2>/dev/null | awk -F/ '/avg/{print $5 " ms"}')
     val "Ping $target" "${RTT:-timeout}"
 done
 
 else
     echo ""
-    echo -e "${D}Benchmarks skipped. Run with --bench flag to include performance tests.${N}"
+    echo -e "${D}Benchmarks skipped. Run with --bench to include performance tests.${N}"
 fi
 
 # ════════════════════════════════════════════════════════════════════════
