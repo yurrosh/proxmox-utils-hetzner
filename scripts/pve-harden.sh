@@ -347,8 +347,8 @@ ok "Debian-Security + Proxmox, no auto-reboot"
 # ===========================================================
 step 11 "Subscription nag"
 PL="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
-if [[ -f "$PL" ]] && grep -q "No valid sub" "$PL"; then
-    sed -Ezi.bak "s/(Ext\.Msg\.show\(\{\s+title: gettext\('No valid sub)/void\(\{ \/\/\1/g" "$PL"
+if [[ -f "$PL" ]] && grep -q "res.data.status.toLowerCase() !== 'active'" "$PL"; then
+    sed -i.bak "s/res.data.status.toLowerCase() !== 'active'/false/" "$PL"
     systemctl restart pveproxy
     ok "Removed (reapply after pve-manager updates)"
 else skip "Already removed or not applicable"; fi
