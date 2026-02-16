@@ -154,12 +154,9 @@ echo ""
 echo -e "  ${W}Proxmox (host):${N}"
 echo -e "    qm set $VMID --${FREE_NIC} virtio=${MAC_UPPER},bridge=${PUBLIC_BRIDGE}"
 echo ""
-echo -e "  ${W}Guest network config (/etc/network/interfaces.d/public):${N}"
-echo -e "    auto eth1"
-echo -e "    iface eth1 inet static"
-echo -e "        address ${PUBLIC_IP}/32"
-echo -e "        gateway ${HOST_GW}"
-echo -e "        pointopoint ${HOST_GW}"
+echo -e "  ${W}Guest config:${N} netplan (Debian 13+) or ifupdown (Debian 12)"
+echo -e "    address ${PUBLIC_IP}/32"
+echo -e "    gateway ${HOST_GW}"
 echo ""
 
 if [ "$APPLY" = false ]; then
@@ -230,7 +227,58 @@ ok "Internal NIC: \$INTERNAL_NIC"
 # ── 2. Configure public interface ───────────────────────────────────
 echo -e "\n\${C}[2/6] Configuring \$PUBLIC_NIC with \$PUBLIC_IP\${N}"
 
-cat > /etc/network/interfaces.d/public <<NETEOF
+# Detect network manager: netplan (Debian 13+) or ifupdown (Debian 12)
+USE_NETPLAN=false
+if command -v netplan &>/dev/null && [ -d /etc/netplan ]; then
+    USE_NETPLAN=true
+fi
+
+# Cloud-init may manage networking — disable to prevent conflicts
+mkdir -p /etc/cloud/cloud.cfg.d
+cat > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg <<CLOUDEOF
+network: {config: disabled}
+CLOUDEOF
+ok "Disabled cloud-init network management"
+
+# Get the MAC address of the public NIC for matching
+PUB_MAC=\$(cat "/sys/class/net/\$PUBLIC_NIC/address" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+if \$USE_NETPLAN; then
+    # ── Netplan (Debian 13 / Trixie) ──
+    cat > /etc/netplan/60-public.yaml <<NPEOF
+network:
+  version: 2
+  ethernets:
+    \$PUBLIC_NIC:
+      match:
+        macaddress: "\$PUB_MAC"
+      addresses:
+        - "\${PUBLIC_IP}/32"
+      nameservers:
+        addresses:
+          - 1.1.1.1
+          - 8.8.8.8
+      routes:
+        - to: "default"
+          via: "\$GATEWAY"
+        - to: "\${GATEWAY}/32"
+          scope: link
+      set-name: "\$PUBLIC_NIC"
+NPEOF
+    ok "Wrote /etc/netplan/60-public.yaml"
+
+    # Remove default gateway from internal interface netplan
+    for f in /etc/netplan/50-cloud-init.yaml /etc/netplan/*.yaml; do
+        [ -f "\$f" ] && [ "\$f" != "/etc/netplan/60-public.yaml" ] && \
+            sed -i '/^\s*-\s*to:\s*["'\'']*default/,+1d' "\$f" 2>/dev/null || true
+    done
+    ok "Removed default gateway from internal interface configs"
+
+    netplan apply 2>/dev/null
+    ok "Netplan applied — \$PUBLIC_NIC is up"
+else
+    # ── ifupdown (Debian 12 / Bookworm) ──
+    cat > /etc/network/interfaces.d/public <<NETEOF
 # Public interface — Hetzner additional IP
 # Configured by vm-guest-publish.sh
 auto \$PUBLIC_NIC
@@ -239,25 +287,22 @@ iface \$PUBLIC_NIC inet static
     gateway \$GATEWAY
     pointopoint \$GATEWAY
 NETEOF
-ok "Wrote /etc/network/interfaces.d/public"
+    ok "Wrote /etc/network/interfaces.d/public"
 
-# Ensure internal interface does NOT set a default gateway
-# (public NIC should be the default route)
-if [ -f /etc/network/interfaces.d/internal ]; then
-    sed -i '/^\s*gateway/d' /etc/network/interfaces.d/internal
-    ok "Removed gateway from internal interface config"
+    # Remove default gateway from internal interface
+    if [ -f /etc/network/interfaces.d/internal ]; then
+        sed -i '/^\s*gateway/d' /etc/network/interfaces.d/internal
+        ok "Removed gateway from internal interface config"
+    fi
+
+    ifup "\$PUBLIC_NIC" 2>/dev/null || {
+        ip addr add \${PUBLIC_IP}/32 dev "\$PUBLIC_NIC"
+        ip link set "\$PUBLIC_NIC" up
+        ip route add \$GATEWAY dev "\$PUBLIC_NIC"
+        ip route add default via \$GATEWAY dev "\$PUBLIC_NIC"
+    }
+    ok "Interface \$PUBLIC_NIC is up"
 fi
-
-# Cloud-init may manage networking — create a drop-in to prevent conflicts
-mkdir -p /etc/cloud/cloud.cfg.d
-cat > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg <<CLOUDEOF
-network: {config: disabled}
-CLOUDEOF
-ok "Disabled cloud-init network management"
-
-# Bring up the interface
-ifup "\$PUBLIC_NIC" 2>/dev/null || ip addr add \${PUBLIC_IP}/32 dev "\$PUBLIC_NIC" && ip link set "\$PUBLIC_NIC" up && ip route add \$GATEWAY dev "\$PUBLIC_NIC" && ip route add default via \$GATEWAY dev "\$PUBLIC_NIC"
-ok "Interface \$PUBLIC_NIC is up"
 
 # ── 3. Fix routing ─────────────────────────────────────────────────
 echo -e "\n\${C}[3/6] Configuring routing\${N}"

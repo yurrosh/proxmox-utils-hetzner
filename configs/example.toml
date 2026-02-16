@@ -47,7 +47,7 @@ smtp_key = ""
 notification_from = ""
 notification_email = ""
 notification_author = "Proxmox pve1"
-firewall_tcp_ports = [22, 8006]
+firewall_tcp_ports = [22]
 firewall_allow_icmp = true
 firewall_default_in = "DROP"
 f2b_bantime = 3600
@@ -68,6 +68,40 @@ address = "10.10.10.1/24"      # Host gateway on the NAT bridge
 upstream = "vmbr0"              # WAN-facing bridge (masquerade target)
 dns1 = "1.1.1.1"               # For cloud-init / reference
 dns2 = "8.8.8.8"
+
+# ══════════════════════════════════════════════════════════════
+#  TEMPLATE — used by vm-template.sh
+#  Cloud image VM template with Docker + optimizations baked in
+# ══════════════════════════════════════════════════════════════
+
+[template]
+vmid = 9000
+name = "debian-docker-tpl"
+image_url = "https://cloud.debian.org/images/cloud/trixie/daily/latest/debian-13-genericcloud-amd64-daily.qcow2"
+disk_size = "64G"
+storage = "local-zfs"
+cores = 2
+memory = 4096
+cloud_init_user = "root"
+cloud_init_dns = "1.1.1.1"
+ssh_keys_url = ""
+optimize_script = "https://github.com/yurrosh/proxmox-utils-hetzner/raw/main/scripts/vm-optimize.sh"
+
+# ══════════════════════════════════════════════════════════════
+#  VM — used by vm-clone.sh
+#  Production VM cloned from template
+# ══════════════════════════════════════════════════════════════
+
+[vm]
+vmid = 101
+name = "prod-main"
+memory = 65536
+cores = 16
+disk_size = "512G"
+ip = "10.10.10.11/24"
+hotplug = "disk,network"
+balloon = 0
+start_after_clone = true
 
 # ══════════════════════════════════════════════════════════════
 #  TWEAKS — performance optimizations (pve-harden.sh)

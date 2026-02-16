@@ -57,7 +57,7 @@ if [[ "$CONFIG" == "--defaults" ]]; then
     CONNTRACK_MAX=1048576; CONNTRACK_TIMEOUT=28800
     PERMIT_ROOT_LOGIN="prohibit-password"
     SMART_WARN_TEMP=50; SMART_CRIT_TEMP=70
-    FW_TCP_PORTS="[22, 8006]"; FW_ALLOW_ICMP="true"; FW_DEFAULT_IN="DROP"
+    FW_TCP_PORTS="[22]"; FW_ALLOW_ICMP="true"; FW_DEFAULT_IN="DROP"
     F2B_BANTIME=3600; F2B_FINDTIME=600; F2B_MAXRETRY=3
     read -p "SMTP user (from-address for Brevo): " SMTP_USER
     read -p "Admin email (notifications go here): " NOTIF_EMAIL
@@ -91,7 +91,7 @@ if [[ -z "$NOTIF_EMAIL" ]]; then echo -e "${CLR_RED}notification_email is requir
 
 HOST_S=$(hostname -s)
 FQDN=$(hostname -f)
-TOTAL_STEPS=13
+TOTAL_STEPS=14
 
 echo ""
 echo -e "${CLR_GREEN}======= Proxmox Hardening: ${HOST_S} (${FQDN}) =======${CLR_RESET}"
@@ -381,6 +381,23 @@ if systemctl is-active rpcbind &>/dev/null || systemctl is-enabled rpcbind &>/de
     systemctl mask rpcbind.socket rpcbind.service 2>/dev/null || true
     ok "Disabled + masked"
 else skip "Already disabled"; fi
+
+# ===========================================================
+# 14. Disable KSM (Kernel Same-page Merging)
+# ===========================================================
+step 14 "Disable KSM"
+KSM_RUN=$(cat /sys/kernel/mm/ksm/run 2>/dev/null || echo "0")
+if [[ "$KSM_RUN" == "0" ]] && grep -q "KSM_ENABLED=0" /etc/default/ksm 2>/dev/null; then
+    skip "KSM already disabled"
+else
+    echo 0 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+    mkdir -p /etc/default
+    echo "KSM_ENABLED=0" > /etc/default/ksm
+    # Also disable ksmtuned if present
+    systemctl disable --now ksmtuned 2>/dev/null || true
+    systemctl disable --now ksm 2>/dev/null || true
+    ok "KSM disabled (saves 1-5% CPU on non-overprovisioned hosts)"
+fi
 
 # ===========================================================
 # Summary
