@@ -41,3 +41,12 @@ cipassword = ""             # Console login password (empty = SSH-only)
 
 # Lifecycle
 start_after_clone = true
+
+# ── Public IP (optional, used by vm-publish.sh) ───────────────
+# Order additional IP in Hetzner Robot, request virtual MAC.
+# Uncomment and fill in to use: bash scripts/vm-publish.sh configs/vms/this-file.toml --apply
+#
+# [publish]
+# public_ip = "65.109.64.200"         # Hetzner additional IP (no /32 needed)
+# public_gw = "65.109.64.129"         # Usually auto-detected; set if different
+# mac = "00:50:56:12:AB:CD"           # Hetzner virtual MAC for this IP

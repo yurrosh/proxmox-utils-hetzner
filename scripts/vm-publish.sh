@@ -6,7 +6,11 @@
 #   1. Order additional IP in Hetzner Robot (robot.hetzner.com → Server → IPs)
 #   2. Request virtual MAC for that IP (type: Linux/Other)
 #
-# Usage:
+# Usage (TOML config — preferred):
+#   bash vm-publish.sh <config.toml> [--apply]
+#   Reads [vm].vmid and [publish] section from TOML.
+#
+# Usage (positional args — legacy):
 #   bash vm-publish.sh <VMID> <PUBLIC_IP> <VIRTUAL_MAC> [--apply]
 #
 # Without --apply, the script shows what it would do (dry run).
@@ -25,28 +29,63 @@ warn() { echo -e "  ${Y}!${N} $1"; }
 err()  { echo -e "  ${R}✗${N} $1"; }
 info() { echo -e "  ${D}·${N} $1"; }
 
+# ── TOML parser ─────────────────────────────────────────────────────────
+parse_toml() {
+    local file="$1" section="$2" key="$3" default="${4:-}"
+    local val
+    val=$(awk -v sec="[$section]" -v k="$key" '
+        $0==sec{s=1;next} /^\[/{s=0}
+        s && $0~"^"k"[[:space:]]*=" {
+            sub(/^[^=]*=[[:space:]]*/,"")
+            if (substr($0,1,1) == "\"") { sub(/^"/,""); sub(/".*$/,""); print; exit }
+            if (substr($0,1,1) == "'\''") { sub(/^'\''/,""); sub(/'\''.*$/,""); print; exit }
+            sub(/[[:space:]]*#.*$/, ""); sub(/[[:space:]]+$/, ""); print; exit
+        }' "$file" 2>/dev/null)
+    echo "${val:-$default}"
+}
+
 # ── Parse arguments ─────────────────────────────────────────────────────
 usage() {
-    echo "Usage: $0 <VMID> <PUBLIC_IP> <VIRTUAL_MAC> [--apply]"
+    echo "Usage: $0 <config.toml> [--apply]"
+    echo "       $0 <VMID> <PUBLIC_IP> <VIRTUAL_MAC> [--apply]"
     echo ""
-    echo "  VMID         VM ID in Proxmox (e.g., 101)"
-    echo "  PUBLIC_IP    Hetzner additional IP (e.g., 65.109.64.200)"
-    echo "  VIRTUAL_MAC  Hetzner virtual MAC (e.g., 00:50:56:12:AB:CD)"
+    echo "  TOML mode:   Reads [vm].vmid and [publish] section"
+    echo "  Legacy mode: Positional VMID, IP, MAC arguments"
     echo "  --apply      Actually make changes (default: dry run)"
-    echo ""
-    echo "Example:"
-    echo "  $0 101 65.109.64.200 00:50:56:12:AB:CD --apply"
     exit 1
 }
 
 [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] && usage
-[ $# -lt 3 ] && usage
+[ $# -lt 1 ] && usage
 
-VMID="$1"
-PUBLIC_IP="$2"
-VIRTUAL_MAC="$3"
 APPLY=false
-[ "${4:-}" = "--apply" ] && APPLY=true
+
+# Detect mode: TOML file or positional args
+if [[ -f "$1" ]] && [[ "$1" == *.toml ]]; then
+    # ── TOML mode ──
+    CONFIG="$1"
+    [ "${2:-}" = "--apply" ] && APPLY=true
+
+    VMID=$(parse_toml "$CONFIG" vm vmid "")
+    PUBLIC_IP=$(parse_toml "$CONFIG" publish public_ip "")
+    VIRTUAL_MAC=$(parse_toml "$CONFIG" publish mac "")
+    PUB_GW_OVERRIDE=$(parse_toml "$CONFIG" publish public_gw "")
+
+    [ -z "$VMID" ] && { echo -e "${R}Missing [vm] vmid in $CONFIG${N}"; exit 1; }
+    [ -z "$PUBLIC_IP" ] && { echo -e "${R}Missing [publish] public_ip in $CONFIG${N}"; exit 1; }
+    [ -z "$VIRTUAL_MAC" ] && { echo -e "${R}Missing [publish] mac in $CONFIG${N}"; exit 1; }
+
+    # Strip CIDR if present (user may write 65.109.64.200/32)
+    PUBLIC_IP="${PUBLIC_IP%%/*}"
+else
+    # ── Legacy positional mode ──
+    [ $# -lt 3 ] && usage
+    VMID="$1"
+    PUBLIC_IP="$2"
+    VIRTUAL_MAC="$3"
+    PUB_GW_OVERRIDE=""
+    [ "${4:-}" = "--apply" ] && APPLY=true
+fi
 
 echo -e "${W}vm-publish.sh — Attach public IP to VM${N}"
 echo -e "${D}$(date '+%Y-%m-%d %H:%M:%S %Z')${N}"
@@ -97,7 +136,11 @@ HOST_GW=$(ip route | awk '/^default/{print $3}' | head -1)
 HOST_IP=$(ip -4 addr show vmbr0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
 PUBLIC_BRIDGE="vmbr0"
 
-if [ -z "$HOST_GW" ]; then
+# Use explicit gateway from TOML if provided, otherwise auto-detect
+if [ -n "${PUB_GW_OVERRIDE:-}" ]; then
+    HOST_GW="$PUB_GW_OVERRIDE"
+    ok "Gateway from config: $HOST_GW"
+elif [ -z "$HOST_GW" ]; then
     err "Cannot detect host default gateway"
     exit 1
 fi
