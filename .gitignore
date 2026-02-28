@@ -13,6 +13,8 @@
 # Personal server configs (keep only example-*.toml)
 configs/*.toml
 !configs/example*.toml
+configs/vms/*.toml
+!configs/vms/example*.toml
 
 # Benchmark results
 netbench_results_*

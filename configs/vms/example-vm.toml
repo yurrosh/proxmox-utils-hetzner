@@ -1,0 +1,43 @@
+# VM Config — EXAMPLE
+# Lightweight config for vm-clone.sh (and vm-template.sh if rebuilding).
+# Copy, rename, customize. Only [vm] and [nat] are required for cloning.
+#
+# Usage:
+#   bash scripts/vm-clone.sh configs/vms/my-vm.toml          # dry run
+#   bash scripts/vm-clone.sh configs/vms/my-vm.toml --apply   # execute
+
+# ── NAT gateway (must match host's vmbr1 config) ──────────────
+[nat]
+address = "10.10.10.1/24"
+
+# ── Template reference (only needed if rebuilding template) ───
+[template]
+vmid = 9000
+
+# ── VM settings ───────────────────────────────────────────────
+[vm]
+vmid = 101
+name = "prod-main"
+
+# Resources
+memory = 65536              # MB (65536 = 64GB)
+cores = 16
+disk_size = "512G"
+balloon = 0                 # 0 = fixed RAM, no ballooning
+
+# Network
+ip = "10.10.10.11/24"       # Static IP on vmbr1 (NAT bridge)
+net_queues = 4              # Virtio multiqueue (1-4, match core count)
+hotplug = "disk,network"
+
+# Performance tuning
+numa = 1                    # NUMA topology (1 = enabled, good for many-core)
+allow_ksm = 0               # KSM memory dedup (0 = off for dedicated hardware)
+disk_aio = "io_uring"       # I/O backend (io_uring = optimal for NVMe/ZFS)
+disk_cache = "none"         # Host cache (none = let ZFS ARC handle it)
+
+# Cloud-init
+cipassword = ""             # Console login password (empty = SSH-only)
+
+# Lifecycle
+start_after_clone = true
