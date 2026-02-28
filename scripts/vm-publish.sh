@@ -551,10 +551,12 @@ ok "Generated guest script: $GUEST_SCRIPT"
 
 # Try to SCP it to the VM
 if [ -n "$VM_INTERNAL_IP" ]; then
-    if scp -o ConnectTimeout=5 "$GUEST_SCRIPT" "root@${VM_INTERNAL_IP}:/tmp/vm-guest-publish.sh" &>/dev/null; then
+    if scp -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q \
+        "$GUEST_SCRIPT" "root@${VM_INTERNAL_IP}:/tmp/vm-guest-publish.sh" 2>/dev/null; then
         ok "Copied to VM: /tmp/vm-guest-publish.sh"
     else
-        warn "Could not SCP to VM — copy manually"
+        warn "Could not SCP to VM — copy manually:"
+        echo -e "       ${D}scp ${GUEST_SCRIPT} root@${VM_INTERNAL_IP}:/tmp/vm-guest-publish.sh${N}"
     fi
 fi
 
@@ -574,11 +576,14 @@ else
     echo -e "       ${D}qm start $VMID${N}"
 fi
 echo ""
-echo -e "    2. SSH into the VM and run the guest setup:"
+echo -e "    2. Copy guest script (if SCP failed above):"
+echo -e "       ${D}scp ${GUEST_SCRIPT} root@${VM_INTERNAL_IP:-<INTERNAL_IP>}:/tmp/vm-guest-publish.sh${N}"
+echo ""
+echo -e "    3. SSH into the VM and run the guest setup:"
 echo -e "       ${D}ssh root@${VM_INTERNAL_IP:-<INTERNAL_IP>}${N}"
 echo -e "       ${D}bash /tmp/vm-guest-publish.sh${N}"
 echo ""
-echo -e "    3. Verify from your workstation:"
+echo -e "    4. Verify from your workstation:"
 echo -e "       ${D}ssh root@${PUBLIC_IP}${N}"
 echo -e "       ${D}curl -I http://${PUBLIC_IP}${N}"
 echo -e "       ${D}nmap -Pn ${PUBLIC_IP}${N}"
