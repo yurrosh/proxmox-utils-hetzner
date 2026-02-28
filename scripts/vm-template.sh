@@ -137,25 +137,35 @@ qm create "$VMID" \
     --balloon 0 \
     --net0 "virtio,bridge=vmbr1" \
     --scsihw virtio-scsi-single \
-    --agent enabled=1 \
+    --agent enabled=1,fstrim_cloned_disks=1 \
     --serial0 socket \
-    --vga serial0 \
+    --vga virtio \
+    --tablet 0 \
+    --bios ovmf \
+    --efidisk0 "${STORAGE}:1,efitype=4m,pre-enrolled-keys=0" \
     --machine q35
-ok "VM created"
+ok "VM created (OVMF UEFI, virtio VGA, serial0 emergency)"
 
 # ── Import disk ─────────────────────────────────────────────────────────
 step 5 "Importing disk + cloud-init"
 qm importdisk "$VMID" "$IMAGE_FILE" "$STORAGE" >/dev/null
 ok "Disk imported"
 
-# Attach as scsi0 with io_uring, discard, SSD
-qm set "$VMID" --scsi0 "${STORAGE}:vm-${VMID}-disk-0,iothread=1,discard=on,ssd=1"
+# Find the imported disk (efidisk0 takes disk-0, so imported disk is typically disk-1)
+IMPORTED_DISK=$(qm config "$VMID" | grep '^unused' | head -1 | sed 's/.*: //')
+if [[ -z "$IMPORTED_DISK" ]]; then
+    err "Could not find imported disk"; exit 1
+fi
+info "Imported disk: $IMPORTED_DISK"
+
+# Attach as scsi0 with io_uring, discard, SSD, no cache (optimal for ZFS)
+qm set "$VMID" --scsi0 "${IMPORTED_DISK},aio=io_uring,cache=none,iothread=1,discard=on,ssd=1"
 qm resize "$VMID" scsi0 "$DISK_SIZE"
 ok "Disk resized to $DISK_SIZE"
 
 qm set "$VMID" --boot order=scsi0
-qm set "$VMID" --ide2 "${STORAGE}:cloudinit"
-ok "Cloud-init drive added"
+qm set "$VMID" --scsi1 "${STORAGE}:cloudinit"
+ok "Cloud-init drive added (scsi1)"
 
 # Cloud-init defaults
 qm set "$VMID" --ciuser "$CI_USER"
@@ -192,8 +202,9 @@ if command -v virt-customize &>/dev/null; then
     fi
 
     if [[ -f "$OPTSCRIPT" ]]; then
-        # Find the actual disk image
-        DISK_PATH=$(pvesm path "${STORAGE}:vm-${VMID}-disk-0" 2>/dev/null)
+        # Find the actual disk image (scsi0)
+        SCSI0_VOL=$(qm config "$VMID" | awk '/^scsi0:/ {split($2,a,","); print a[1]}')
+        DISK_PATH=$(pvesm path "$SCSI0_VOL" 2>/dev/null)
         if [[ -n "$DISK_PATH" ]]; then
             TEMPLATE_MODE=1 virt-customize -a "$DISK_PATH" \
                 --install qemu-guest-agent,curl,wget,htop,iotop,jq,unzip,git,tmux,rsync,net-tools,dnsutils \

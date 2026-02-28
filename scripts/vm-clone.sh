@@ -58,6 +58,12 @@ VM_IP=$(parse_toml "$CONFIG" vm ip "10.10.10.11/24")
 VM_HOTPLUG=$(parse_toml "$CONFIG" vm hotplug "disk,network")
 VM_BALLOON=$(parse_toml "$CONFIG" vm balloon "0")
 VM_START=$(parse_toml "$CONFIG" vm start_after_clone "true")
+VM_NUMA=$(parse_toml "$CONFIG" vm numa "1")
+VM_KSM=$(parse_toml "$CONFIG" vm allow_ksm "0")
+VM_NET_QUEUES=$(parse_toml "$CONFIG" vm net_queues "4")
+VM_CIPASSWORD=$(parse_toml "$CONFIG" vm cipassword "")
+VM_DISK_AIO=$(parse_toml "$CONFIG" vm disk_aio "io_uring")
+VM_DISK_CACHE=$(parse_toml "$CONFIG" vm disk_cache "none")
 
 NAT_GW=$(parse_toml "$CONFIG" nat address "10.10.10.1/24")
 NAT_GW="${NAT_GW%%/*}"
@@ -90,8 +96,9 @@ echo ""
 echo -e "  ${W}Clone:${N}"
 echo -e "    Template:  $TEMPLATE_ID → VM $VMID ($VM_NAME)"
 echo -e "    Memory:    $VM_MEMORY MB (balloon=$VM_BALLOON)"
-echo -e "    Cores:     $VM_CORES"
-echo -e "    Disk:      $VM_DISK"
+echo -e "    Cores:     $VM_CORES (NUMA=$VM_NUMA)"
+echo -e "    Disk:      $VM_DISK (aio=$VM_DISK_AIO, cache=$VM_DISK_CACHE)"
+echo -e "    Net:       queues=$VM_NET_QUEUES, KSM=$VM_KSM"
 echo -e "    IP:        $VM_IP (gw=$NAT_GW)"
 echo -e "    Hotplug:   $VM_HOTPLUG"
 echo ""
@@ -111,10 +118,28 @@ qm set "$VMID" \
     --memory "$VM_MEMORY" \
     --balloon "$VM_BALLOON" \
     --cores "$VM_CORES" \
+    --numa "$VM_NUMA" \
+    --allow-ksm "$VM_KSM" \
+    --tablet 0 \
     --hotplug "$VM_HOTPLUG" \
     --ipconfig0 "ip=${VM_IP},gw=${NAT_GW}" \
     --onboot 1
-ok "Resources set: ${VM_CORES} cores, ${VM_MEMORY}MB RAM"
+ok "Resources set: ${VM_CORES} cores, ${VM_MEMORY}MB RAM, NUMA=$VM_NUMA"
+
+# Set net0 multiqueue (improves throughput with multiple cores)
+qm set "$VMID" --net0 "virtio,bridge=vmbr1,queues=${VM_NET_QUEUES}"
+ok "Net0 multiqueue: queues=$VM_NET_QUEUES"
+
+# Override scsi0 with optimal I/O settings for ZFS
+SCSI0_VOL=$(qm config "$VMID" | awk '/^scsi0:/ {split($2,a,","); print a[1]}')
+qm set "$VMID" --scsi0 "${SCSI0_VOL},aio=${VM_DISK_AIO},cache=${VM_DISK_CACHE},discard=on,iothread=1,ssd=1"
+ok "Disk I/O: aio=$VM_DISK_AIO, cache=$VM_DISK_CACHE"
+
+# Set cloud-init password if configured (needed for console access)
+if [[ -n "$VM_CIPASSWORD" ]]; then
+    qm set "$VMID" --cipassword "$VM_CIPASSWORD"
+    ok "Cloud-init password set"
+fi
 
 # Resize disk
 qm resize "$VMID" scsi0 "$VM_DISK"

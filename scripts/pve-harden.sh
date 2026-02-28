@@ -91,7 +91,7 @@ if [[ -z "$NOTIF_EMAIL" ]]; then echo -e "${CLR_RED}notification_email is requir
 
 HOST_S=$(hostname -s)
 FQDN=$(hostname -f)
-TOTAL_STEPS=14
+TOTAL_STEPS=16
 
 echo ""
 echo -e "${CLR_GREEN}======= Proxmox Hardening: ${HOST_S} (${FQDN}) =======${CLR_RESET}"
@@ -343,15 +343,55 @@ systemctl enable --now unattended-upgrades >/dev/null 2>&1
 ok "Debian-Security + Proxmox, no auto-reboot"
 
 # ===========================================================
-# 11. Subscription nag removal
+# 11. Subscription nag removal (dpkg hook — survives updates)
 # ===========================================================
 step 11 "Subscription nag"
-PL="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
-if [[ -f "$PL" ]] && grep -q "res.data.status.toLowerCase() !== 'active'" "$PL"; then
-    sed -i.bak "s/res.data.status.toLowerCase() !== 'active'/false/" "$PL"
+if [[ -f /usr/local/bin/pve-remove-nag.sh ]] && grep -q NoMoreNagging /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js 2>/dev/null; then
+    skip "Already patched with dpkg hook"
+else
+    # Create patcher script (runs on every dpkg invocation)
+    # Approach from community-scripts/ProxmoxVE (MIT license)
+    mkdir -p /usr/local/bin
+    cat >/usr/local/bin/pve-remove-nag.sh <<'NAGEOF'
+#!/bin/sh
+WEB_JS=/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+if [ -s "$WEB_JS" ] && ! grep -q NoMoreNagging "$WEB_JS"; then
+    sed -i -e "/data\.status/ s/!//" -e "/data\.status/ s/active/NoMoreNagging/" "$WEB_JS"
+fi
+MOBILE_TPL=/usr/share/pve-yew-mobile-gui/index.html.tpl
+MARKER="<!-- MANAGED BLOCK FOR MOBILE NAG -->"
+if [ -f "$MOBILE_TPL" ] && ! grep -q "$MARKER" "$MOBILE_TPL"; then
+    printf "%s\n" "$MARKER" \
+      "<script>" \
+      "  function removeSubscriptionElements() {" \
+      "    document.querySelectorAll('dialog.pwt-outer-dialog').forEach(d => {" \
+      "      if ((d.textContent||'').toLowerCase().includes('subscription')) d.remove();" \
+      "    });" \
+      "    document.querySelectorAll('.pwt-card.pwt-p-2.pwt-d-flex.pwt-interactive.pwt-justify-content-center').forEach(c => {" \
+      "      if (!c.querySelector('button') && (c.textContent||'').toLowerCase().includes('subscription')) c.remove();" \
+      "    });" \
+      "  }" \
+      "  const observer = new MutationObserver(removeSubscriptionElements);" \
+      "  observer.observe(document.body, { childList: true, subtree: true });" \
+      "  removeSubscriptionElements();" \
+      "  setInterval(removeSubscriptionElements, 300);" \
+      "  setTimeout(() => {observer.disconnect();}, 10000);" \
+      "</script>" "" >> "$MOBILE_TPL"
+fi
+NAGEOF
+    chmod 755 /usr/local/bin/pve-remove-nag.sh
+
+    # dpkg post-invoke hook — auto-reapplies after every apt upgrade
+    cat >/etc/apt/apt.conf.d/no-nag-script <<'HOOKEOF'
+DPkg::Post-Invoke { "/usr/local/bin/pve-remove-nag.sh"; };
+HOOKEOF
+    chmod 644 /etc/apt/apt.conf.d/no-nag-script
+
+    # Apply now
+    apt --reinstall install proxmox-widget-toolkit >/dev/null 2>&1
     systemctl restart pveproxy
-    ok "Removed (reapply after pve-manager updates)"
-else skip "Already removed or not applicable"; fi
+    ok "Removed with dpkg hook (auto-reapplies after updates)"
+fi
 
 # ===========================================================
 # 12. Sysctl — conntrack tuning

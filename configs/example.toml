@@ -86,6 +86,8 @@ cloud_init_user = "root"
 cloud_init_dns = "1.1.1.1"
 ssh_keys_url = ""
 optimize_script = "https://github.com/yurrosh/proxmox-utils-hetzner/raw/main/scripts/vm-optimize.sh"
+# Template bakes in: OVMF UEFI, virtio VGA, serial0 emergency console,
+# tablet=0, balloon=0, fstrim agent, io_uring+no-cache on scsi0
 
 # ══════════════════════════════════════════════════════════════
 #  VM — used by vm-clone.sh
@@ -102,6 +104,14 @@ ip = "10.10.10.11/24"
 hotplug = "disk,network"
 balloon = 0
 start_after_clone = true
+
+# ── Production VM tuning (applied by vm-clone.sh) ──
+numa = 1                  # NUMA topology — beneficial for many-core VMs
+allow_ksm = 0             # No memory dedup — dedicated hardware
+net_queues = 4            # Multiqueue virtio-net
+disk_aio = "io_uring"     # Async I/O backend — optimal for ZFS on NVMe
+disk_cache = "none"       # No host cache — ZFS ARC handles caching
+cipassword = ""           # Cloud-init password for console login (set per deploy)
 
 # ══════════════════════════════════════════════════════════════
 #  TWEAKS — performance optimizations (pve-harden.sh)
