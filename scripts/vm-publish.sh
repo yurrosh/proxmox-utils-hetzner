@@ -308,12 +308,33 @@ network:
           scope: link
       set-name: "\$PUBLIC_NIC"
 NPEOF
+    chmod 600 /etc/netplan/60-public.yaml
     ok "Wrote /etc/netplan/60-public.yaml"
 
-    # Remove default gateway from internal interface netplan
+    # Remove default route + routes block from internal interface netplan
+    # Uses python3 for safe YAML editing (avoids sed breaking YAML structure)
     for f in /etc/netplan/50-cloud-init.yaml /etc/netplan/*.yaml; do
-        [ -f "\$f" ] && [ "\$f" != "/etc/netplan/60-public.yaml" ] && \
-            sed -i '/^\s*-\s*to:\s*["'\'']*default/,+1d' "\$f" 2>/dev/null || true
+        [ -f "\$f" ] && [ "\$f" != "/etc/netplan/60-public.yaml" ] || continue
+        python3 -c "
+import yaml, sys
+with open('\$f') as fh:
+    cfg = yaml.safe_load(fh)
+if not cfg or 'network' not in cfg:
+    sys.exit(0)
+changed = False
+for name, eth in cfg.get('network',{}).get('ethernets',{}).items():
+    if 'routes' in eth:
+        eth['routes'] = [r for r in eth['routes'] if r.get('to') != 'default']
+        if not eth['routes']:
+            del eth['routes']
+        changed = True
+    if 'gateway4' in eth:
+        del eth['gateway4']
+        changed = True
+if changed:
+    with open('\$f','w') as fh:
+        yaml.dump(cfg, fh, default_flow_style=False)
+" 2>/dev/null || true
     done
     ok "Removed default gateway from internal interface configs"
 
@@ -391,28 +412,15 @@ cat > /etc/nftables.conf <<'NFTEOF'
 #!/usr/sbin/nft -f
 # Production firewall — vm-guest-publish.sh
 # Default: deny all inbound, allow all outbound
+# Per-IP SSH blocking handled by fail2ban.
 # Edit the "Public services" section to open ports.
 flush ruleset
 
 table inet filter {
-    # Rate limit sets
-    set ssh_ratelimit {
-        type ipv4_addr
-        flags dynamic, timeout
-        timeout 2m
-    }
-
-    set ssh_ratelimit6 {
-        type ipv6_addr
-        flags dynamic, timeout
-        timeout 2m
-    }
-
-    # ── Inbound ─────────────────────────────────────────────────
     chain input {
         type filter hook input priority 0; policy drop;
 
-        # Loopback — always allow
+        # Loopback
         iif "lo" accept
 
         # Connection tracking
@@ -420,45 +428,31 @@ table inet filter {
         ct state invalid drop
 
         # ICMP — rate limited
-        ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } \
-            limit rate 10/second accept
+        ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 10/second accept
         ip6 nexthdr icmpv6 accept
 
         # Internal network — full trust
         ip saddr 10.10.10.0/24 accept
 
-        # Docker bridge — allow container traffic
+        # Docker bridge
         ip saddr 172.16.0.0/12 accept
 
         # ── Public services (edit this section) ─────────────────
-        # HTTP / HTTPS
         tcp dport { 80, 443 } accept
-
-        # SSH — rate limited (5 new connections per minute per IP)
-        tcp dport 22 ct state new ip saddr \
-            @ssh_ratelimit { ip saddr limit rate 5/minute } accept
-        tcp dport 22 ct state new ip6 saddr \
-            @ssh_ratelimit6 { ip6 saddr limit rate 5/minute } accept
-
+        tcp dport 22 ct state new limit rate 5/minute accept
         # Uncomment as needed:
         # tcp dport 8080 accept              # Alt HTTP
         # tcp dport { 25, 587, 465 } accept  # Mail
         # udp dport 51820 accept             # WireGuard
-        # tcp dport 5432 accept              # PostgreSQL (restrict source!)
-        # tcp dport 3306 accept              # MySQL (restrict source!)
         # ────────────────────────────────────────────────────────
     }
 
-    # ── Outbound ────────────────────────────────────────────────
     chain output {
         type filter hook output priority 0; policy accept;
     }
 
-    # ── Forward (Docker) ────────────────────────────────────────
     chain forward {
         type filter hook forward priority 0; policy accept;
-        # Docker manages forwarding via iptables.
-        # To restrict: change policy to drop, add explicit rules.
     }
 }
 NFTEOF
