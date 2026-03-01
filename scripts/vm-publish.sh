@@ -439,7 +439,7 @@ table inet filter {
 
         # ── Public services (edit this section) ─────────────────
         tcp dport { 80, 443 } accept
-        tcp dport 22 ct state new limit rate 5/minute accept
+        tcp dport { 22, 2222 } ct state new limit rate 5/minute accept
         # Uncomment as needed:
         # tcp dport 8080 accept              # Alt HTTP
         # tcp dport { 25, 587, 465 } accept  # Mail
@@ -513,6 +513,7 @@ maxretry = 5
 [sshd]
 enabled = true
 mode = aggressive
+port = 22,2222
 F2BEOF
         systemctl enable fail2ban &>/dev/null
         systemctl restart fail2ban &>/dev/null
