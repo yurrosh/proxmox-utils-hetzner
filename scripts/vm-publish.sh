@@ -472,6 +472,8 @@ if [ -f "\$SSH_CONF" ]; then
 else
     cat > "\$SSH_CONF" <<'SSHEOF'
 # vm-guest-publish.sh — SSH hardening for public-facing VM
+Port 22
+Port 2222
 PermitRootLogin prohibit-password
 PasswordAuthentication no
 PubkeyAuthentication yes
