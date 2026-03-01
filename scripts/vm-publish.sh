@@ -599,7 +599,7 @@ fi
 echo -e "\n\${C}[6/6] fail2ban\${N}"
 
 if command -v fail2ban-server &>/dev/null; then
-    skip "fail2ban already installed"
+    ok "fail2ban already installed"
 else
     if apt-get install -y -qq fail2ban 2>/dev/null; then
         # Configure for nftables backend
