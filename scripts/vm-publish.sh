@@ -70,6 +70,8 @@ if [[ -f "$1" ]] && [[ "$1" == *.toml ]]; then
     PUBLIC_IP=$(parse_toml "$CONFIG" publish public_ip "")
     VIRTUAL_MAC=$(parse_toml "$CONFIG" publish mac "")
     PUB_GW_OVERRIDE=$(parse_toml "$CONFIG" publish public_gw "")
+    IPV6_ADDR=$(parse_toml "$CONFIG" publish ipv6 "")
+    IPV6_GW=$(parse_toml "$CONFIG" publish ipv6_gw "fe80::1")
 
     [ -z "$VMID" ] && { echo -e "${R}Missing [vm] vmid in $CONFIG${N}"; exit 1; }
     [ -z "$PUBLIC_IP" ] && { echo -e "${R}Missing [publish] public_ip in $CONFIG${N}"; exit 1; }
@@ -84,6 +86,8 @@ else
     PUBLIC_IP="$2"
     VIRTUAL_MAC="$3"
     PUB_GW_OVERRIDE=""
+    IPV6_ADDR=""
+    IPV6_GW="fe80::1"
     [ "${4:-}" = "--apply" ] && APPLY=true
 fi
 
@@ -120,6 +124,9 @@ if ! echo "$PUBLIC_IP" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,
     exit 1
 fi
 ok "Public IP: $PUBLIC_IP"
+if [ -n "$IPV6_ADDR" ]; then
+    ok "IPv6: $IPV6_ADDR"
+fi
 
 # Validate MAC format
 MAC_UPPER=$(echo "$VIRTUAL_MAC" | tr '[:lower:]' '[:upper:]')
@@ -196,10 +203,18 @@ echo -e "\n${C}[4/5] $([ "$APPLY" = true ] && echo "Applying changes" || echo "D
 echo ""
 echo -e "  ${W}Proxmox (host):${N}"
 echo -e "    qm set $VMID --${FREE_NIC} virtio=${MAC_UPPER},bridge=${PUBLIC_BRIDGE}"
+if [ -n "$IPV6_ADDR" ]; then
+    echo -e "    sysctl net.ipv6.conf.vmbr0.proxy_ndp=1"
+    echo -e "    ip -6 neigh add proxy ${IPV6_ADDR%%/*} dev vmbr0"
+fi
 echo ""
 echo -e "  ${W}Guest config:${N} netplan (Debian 13+) or ifupdown (Debian 12)"
 echo -e "    address ${PUBLIC_IP}/32"
 echo -e "    gateway ${HOST_GW}"
+if [ -n "$IPV6_ADDR" ]; then
+    echo -e "    address ${IPV6_ADDR}/128"
+    echo -e "    gateway ${IPV6_GW}"
+fi
 echo ""
 
 if [ "$APPLY" = false ]; then
@@ -210,6 +225,28 @@ fi
 # ── Apply: add NIC to VM ───────────────────────────────────────────────
 qm set "$VMID" --"${FREE_NIC}" "virtio=${MAC_UPPER},bridge=${PUBLIC_BRIDGE}"
 ok "Added ${FREE_NIC} (virtio, MAC=${MAC_UPPER}, bridge=${PUBLIC_BRIDGE})"
+
+# ── Apply: IPv6 NDP proxy (host-side) ─────────────────────────────────
+if [ -n "$IPV6_ADDR" ]; then
+    IPV6_BARE="${IPV6_ADDR%%/*}"
+
+    # Enable NDP proxy on vmbr0 (idempotent)
+    sysctl -w net.ipv6.conf.vmbr0.proxy_ndp=1 &>/dev/null
+    if ! grep -q 'proxy_ndp.*=.*1' /etc/sysctl.d/99-ipv6-ndp.conf 2>/dev/null; then
+        echo "net.ipv6.conf.vmbr0.proxy_ndp = 1" > /etc/sysctl.d/99-ipv6-ndp.conf
+    fi
+    ok "NDP proxy enabled on vmbr0"
+
+    # Add proxy entry for this VM's IPv6
+    ip -6 neigh add proxy "$IPV6_BARE" dev vmbr0 2>/dev/null || true
+    ok "NDP proxy entry: $IPV6_BARE"
+
+    # Persist via /etc/network/interfaces post-up (idempotent)
+    if ! grep -q "$IPV6_BARE" /etc/network/interfaces 2>/dev/null; then
+        sed -i "/iface vmbr0 inet6 static/a\\    post-up ip -6 neigh add proxy ${IPV6_BARE} dev vmbr0" /etc/network/interfaces
+        ok "Persisted NDP proxy in /etc/network/interfaces"
+    fi
+fi
 
 # ── Generate guest setup script ────────────────────────────────────────
 echo -e "\n${C}[5/5] Generating guest setup script${N}"
@@ -230,6 +267,8 @@ err()  { echo -e "  \${R}✗\${N} \$1"; exit 1; }
 PUBLIC_IP="${PUBLIC_IP}"
 GATEWAY="${HOST_GW}"
 INTERNAL_NET="10.10.10.0/24"
+IPV6_ADDR="${IPV6_ADDR}"
+IPV6_GW="${IPV6_GW}"
 
 echo -e "\${W}vm-guest-publish.sh — Public IP + Firewall setup\${N}"
 echo -e "\${D}\$(date '+%Y-%m-%d %H:%M:%S %Z')\${N}"
@@ -288,6 +327,31 @@ PUB_MAC=\$(cat "/sys/class/net/\$PUBLIC_NIC/address" 2>/dev/null | tr '[:upper:]
 
 if \$USE_NETPLAN; then
     # ── Netplan (Debian 13 / Trixie) ──
+    # Build YAML — IPv6 block added only if configured
+    NP_ADDRESSES="        - \"\${PUBLIC_IP}/32\""
+    NP_ROUTES="        - to: \"default\"
+          via: \"\$GATEWAY\"
+        - to: \"\${GATEWAY}/32\"
+          scope: link"
+    NP_NS="          - 1.1.1.1
+          - 8.8.8.8"
+
+    if [ -n "\$IPV6_ADDR" ]; then
+        NP_ADDRESSES="\${NP_ADDRESSES}
+        - \"\${IPV6_ADDR}/128\""
+        NP_ROUTES="\${NP_ROUTES}
+        - to: \"::/0\"
+          via: \"\${IPV6_GW}\""
+        NP_NS="\${NP_NS}
+          - 2606:4700:4700::1111
+          - 2001:4860:4860::8888"
+    fi
+
+    NP_ACCEPT_RA=""
+    if [ -n "\$IPV6_ADDR" ]; then
+        NP_ACCEPT_RA="      accept-ra: false"
+    fi
+
     cat > /etc/netplan/60-public.yaml <<NPEOF
 network:
   version: 2
@@ -295,17 +359,14 @@ network:
     \$PUBLIC_NIC:
       match:
         macaddress: "\$PUB_MAC"
+\${NP_ACCEPT_RA:+\$NP_ACCEPT_RA}
       addresses:
-        - "\${PUBLIC_IP}/32"
+\${NP_ADDRESSES}
       nameservers:
         addresses:
-          - 1.1.1.1
-          - 8.8.8.8
+\${NP_NS}
       routes:
-        - to: "default"
-          via: "\$GATEWAY"
-        - to: "\${GATEWAY}/32"
-          scope: link
+\${NP_ROUTES}
       set-name: "\$PUBLIC_NIC"
 NPEOF
     chmod 600 /etc/netplan/60-public.yaml
@@ -338,6 +399,13 @@ if changed:
     done
     ok "Removed default gateway from internal interface configs"
 
+    # Disable DAD on public NIC if IPv6 is configured (NDP proxy causes DAD conflicts)
+    if [ -n "\$IPV6_ADDR" ]; then
+        sysctl -w "net.ipv6.conf.\${PUBLIC_NIC}.accept_dad=0" &>/dev/null
+        echo "net.ipv6.conf.\${PUBLIC_NIC}.accept_dad = 0" > /etc/sysctl.d/99-ipv6-dad.conf
+        ok "Disabled DAD on \$PUBLIC_NIC (required for NDP proxy)"
+    fi
+
     netplan apply 2>/dev/null
     ok "Netplan applied — \$PUBLIC_NIC is up"
 else
@@ -351,12 +419,28 @@ iface \$PUBLIC_NIC inet static
     gateway \$GATEWAY
     pointopoint \$GATEWAY
 NETEOF
+
+    if [ -n "\$IPV6_ADDR" ]; then
+        cat >> /etc/network/interfaces.d/public <<NETEOF
+
+iface \$PUBLIC_NIC inet6 static
+    address \${IPV6_ADDR}/128
+    gateway \${IPV6_GW}
+NETEOF
+    fi
     ok "Wrote /etc/network/interfaces.d/public"
 
     # Remove default gateway from internal interface
     if [ -f /etc/network/interfaces.d/internal ]; then
         sed -i '/^\s*gateway/d' /etc/network/interfaces.d/internal
         ok "Removed gateway from internal interface config"
+    fi
+
+    # Disable DAD on public NIC if IPv6 is configured (NDP proxy causes DAD conflicts)
+    if [ -n "\$IPV6_ADDR" ]; then
+        sysctl -w "net.ipv6.conf.\${PUBLIC_NIC}.accept_dad=0" &>/dev/null
+        echo "net.ipv6.conf.\${PUBLIC_NIC}.accept_dad = 0" > /etc/sysctl.d/99-ipv6-dad.conf
+        ok "Disabled DAD on \$PUBLIC_NIC (required for NDP proxy)"
     fi
 
     ifup "\$PUBLIC_NIC" 2>/dev/null || {
@@ -366,6 +450,12 @@ NETEOF
         ip route add default via \$GATEWAY dev "\$PUBLIC_NIC"
     }
     ok "Interface \$PUBLIC_NIC is up"
+
+    if [ -n "\$IPV6_ADDR" ]; then
+        ip -6 addr add \${IPV6_ADDR}/128 dev "\$PUBLIC_NIC" 2>/dev/null || true
+        ip -6 route add default via \${IPV6_GW} dev "\$PUBLIC_NIC" 2>/dev/null || true
+        ok "IPv6 configured: \$IPV6_ADDR"
+    fi
 fi
 
 # ── 3. Fix routing ─────────────────────────────────────────────────
@@ -395,6 +485,17 @@ if [ "\$DETECTED_IP" = "\$PUBLIC_IP" ]; then
     ok "External IP confirmed: \$DETECTED_IP"
 else
     warn "External IP mismatch: got \$DETECTED_IP, expected \$PUBLIC_IP"
+fi
+
+# Test IPv6 connectivity
+if [ -n "\$IPV6_ADDR" ]; then
+    sleep 2  # allow DAD/route settling
+    if ping -6 -c 2 -W 3 2606:4700:4700::1111 &>/dev/null; then
+        ok "IPv6 connectivity confirmed (Cloudflare DNS reachable)"
+    else
+        warn "IPv6 ping failed — check NDP proxy on host and DAD status"
+        warn "Debug: ip -6 addr show \$PUBLIC_NIC; ip -6 route show default"
+    fi
 fi
 
 # ── 4. Install & configure nftables firewall ────────────────────────
@@ -532,11 +633,14 @@ echo -e "\${G} ✓ VM is now publicly accessible\${N}"
 echo -e "\${W}═══════════════════════════════════════════════════\${N}"
 echo ""
 echo -e "  \${W}Public IP:\${N}     \$PUBLIC_IP"
+if [ -n "\$IPV6_ADDR" ]; then
+echo -e "  \${W}IPv6:\${N}          \$IPV6_ADDR"
+fi
 echo -e "  \${W}Interface:\${N}     \$PUBLIC_NIC"
 echo -e "  \${W}Gateway:\${N}       \$GATEWAY"
 echo -e "  \${W}Internal IP:\${N}   \$(ip addr show \$INTERNAL_NIC | awk '/inet /{print \$2}' | head -1)"
 echo ""
-echo -e "  \${W}Firewall:\${N}      nftables (default deny)"
+echo -e "  \${W}Firewall:\${N}      nftables (default deny, inet = IPv4+IPv6)"
 echo -e "  \${W}Open ports:\${N}    22 (SSH, rate-limited), 80, 443"
 echo -e "  \${W}SSH auth:\${N}      Key-only (passwords disabled)"
 echo -e "  \${W}fail2ban:\${N}      Active (1h ban / 5 failures)"
@@ -544,8 +648,14 @@ echo ""
 echo -e "  \${C}Remaining steps:\${N}"
 echo -e "    1. Set reverse DNS in Hetzner Robot: \$PUBLIC_IP → your.domain.com"
 echo -e "    2. Create DNS A record: your.domain.com → \$PUBLIC_IP"
+if [ -n "\$IPV6_ADDR" ]; then
+echo -e "    3. Create DNS AAAA record: your.domain.com → \$IPV6_ADDR"
+echo -e "    4. Test from outside: ssh root@\$PUBLIC_IP  /  ssh root@\$IPV6_ADDR"
+echo -e "    5. Edit /etc/nftables.conf to open additional ports as needed"
+else
 echo -e "    3. Test from outside: ssh root@\$PUBLIC_IP"
 echo -e "    4. Edit /etc/nftables.conf to open additional ports as needed"
+fi
 echo ""
 GUESTEOF
 
