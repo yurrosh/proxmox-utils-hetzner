@@ -509,7 +509,7 @@ fi
 # Backup existing rules
 [ -f /etc/nftables.conf ] && cp /etc/nftables.conf /etc/nftables.conf.bak.\$(date +%s)
 
-cat > /etc/nftables.conf <<'NFTEOF'
+cat > /etc/nftables.conf <<NFTEOF
 #!/usr/sbin/nft -f
 # Production firewall — vm-guest-publish.sh
 # Default: deny all inbound, allow all outbound
@@ -554,6 +554,15 @@ table inet filter {
 
     chain forward {
         type filter hook forward priority 0; policy accept;
+    }
+}
+
+# Docker bridge NAT — required because flush ruleset wipes Docker's
+# auto-created iptables rules. Without this, containers lose internet.
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "\$PUBLIC_NIC" masquerade
     }
 }
 NFTEOF
