@@ -70,8 +70,7 @@ detect_context() {
 
 do_install() {
     local filter="$1"
-    local installed=0
-    local skipped=0
+    local installed=0 skipped=0
 
     echo -e "${C_BOLD}Installing proxmox-utils-hetzner scripts (${PREFIX}-* → ${BIN_DIR})${C_RESET}"
     echo -e "${C_DIM}Repo: ${REPO_ROOT}${C_RESET}"
@@ -90,7 +89,7 @@ do_install() {
         # Check source exists
         if [[ ! -f "$src_path" ]]; then
             warn "${name} — source not found: ${src}"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         fi
 
@@ -104,7 +103,7 @@ do_install() {
             existing=$(readlink -f "$link_path")
             if [[ "$existing" == "$src_path" ]]; then
                 info "${name} — already linked"
-                ((installed++))
+                installed=$((installed + 1))
                 continue
             fi
             # Different target — update
@@ -112,13 +111,13 @@ do_install() {
             ok "${name} — updated (was: ${existing})"
         elif [[ -e "$link_path" ]]; then
             warn "${name} — ${link_path} exists and is not a symlink, skipping"
-            ((skipped++))
+            skipped=$((skipped + 1))
             continue
         else
             ln -s "$src_path" "$link_path"
             ok "${name} — linked"
         fi
-        ((installed++))
+        installed=$((installed + 1))
     done
 
     echo ""
@@ -149,7 +148,7 @@ do_remove() {
             if [[ "$target" == "${REPO_ROOT}/"* ]]; then
                 rm "$link_path"
                 ok "${name} — removed"
-                ((removed++))
+                removed=$((removed + 1))
             else
                 warn "${name} — points outside repo (${target}), skipping"
             fi
