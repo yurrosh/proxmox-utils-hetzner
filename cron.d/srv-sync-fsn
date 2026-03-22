@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Bi-directional sync /opt/upstaff-srv-shared — every 15 min
+*/15 * * * * root /opt/upstaff-ops/bin/srv-sync.sh 2>&1 | logger -t srv-sync

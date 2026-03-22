@@ -87,7 +87,52 @@ Personal config files (`configs/*.toml` except examples) are gitignored.
 
 ## Installation
 
-### One-liner (interactive)
+### Clone & install on a server
+
+```bash
+# Clone the repo
+git clone https://github.com/yurrosh/proxmox-utils-hetzner.git /opt/proxmox-utils-hetzner
+cd /opt/proxmox-utils-hetzner
+
+# Install — auto-detects host vs guest VM
+./install.sh
+
+# Or explicitly:
+./install.sh --host     # Proxmox host scripts
+./install.sh --guest    # Guest VM scripts
+./install.sh --all      # Everything
+
+# Check what's installed:
+./install.sh --status
+
+# Remove all symlinks:
+./install.sh --remove
+```
+
+This creates `up-*` symlinks in `/usr/local/bin`:
+
+| Command | Script | Context |
+|---------|--------|---------|
+| `up-snap` | `ops/pve-snap.sh` | host |
+| `up-sync` | `ops/srv-sync.sh` | host |
+| `up-harden` | `scripts/pve-harden.sh` | host |
+| `up-network` | `scripts/pve-network.sh` | host |
+| `up-tunnel` | `scripts/pve-tunnel.sh` | host |
+| `up-tune` | `scripts/pve-tune.sh` | host |
+| `up-config-archive` | `scripts/pve-config-archive.sh` | host |
+| `up-config-sanitize` | `scripts/pve-config-sanitize.sh` | host |
+| `up-vm-template` | `scripts/vm-template.sh` | host |
+| `up-vm-clone` | `scripts/vm-clone.sh` | host |
+| `up-vm-publish` | `scripts/vm-publish.sh` | host |
+| `up-netbench` | `scripts/netbench.sh` | both |
+| `up-audit` | `scripts/vm-audit.sh` | guest |
+| `up-optimize` | `scripts/vm-optimize.sh` | guest |
+| `up-docker-setup` | `guest-utils/docker-setup.sh` | guest |
+| `up-create-users` | `guest-utils/create-users.sh` | guest |
+
+Update scripts by pulling the repo — symlinks always point to the latest version.
+
+### First-time Proxmox install (from Rescue System)
 
 Run from **Hetzner Rescue System** (Linux x64):
 
@@ -183,25 +228,67 @@ bash scripts/vm-audit.sh          # config check
 bash scripts/vm-audit.sh --bench  # + benchmarks
 ```
 
+## Operational Scripts
+
+Day-to-day scripts for running production Proxmox servers. Deploy to `/opt/upstaff-ops/bin/` on each host.
+
+### ops/ (run on Proxmox host)
+
+| Script | Purpose |
+|--------|---------|
+| `pve-snap.sh` | VM snapshots with retention — auto/manual/list/rollback |
+| `srv-sync.sh` | Bi-directional rsync of `/opt/upstaff-srv-shared` over WireGuard |
+
+### cron.d/ (copy to /etc/cron.d/)
+
+| File | Purpose |
+|------|---------|
+| `pve-snapshots` | Nightly auto-snapshots at 03:00 UTC (edit VMID per server) |
+| `srv-sync-fsn` | srv-sync every 15 min (for FSN) |
+| `srv-sync-hel` | srv-sync hourly at :45 (for HEL) |
+
+### Deployment
+
+```bash
+# Copy scripts to server
+scp ops/*.sh root@server:/opt/upstaff-ops/bin/
+ssh root@server 'chmod +x /opt/upstaff-ops/bin/*.sh'
+
+# Install cron jobs (edit VMID in pve-snapshots first)
+scp cron.d/pve-snapshots root@server:/etc/cron.d/
+scp cron.d/srv-sync-fsn root@server:/etc/cron.d/srv-sync   # FSN
+scp cron.d/srv-sync-hel root@server:/etc/cron.d/srv-sync   # HEL
+```
+
 ## Repo Structure
 
 ```
 proxmox-utils-hetzner/
-├── scripts/
-│   ├── pve-install-hetzner.sh    # Installer (curl-friendly)
-│   ├── pve-harden.sh             # Security hardening (14 steps)
-│   ├── pve-network.sh            # NAT bridge setup
-│   ├── pve-tunnel.sh             # Cloudflare Tunnel setup
-│   ├── pve-config-archive.sh     # Config backup
-│   ├── pve-config-sanitize.sh    # Sanitize for external analysis
-│   ├── vm-template.sh            # Create VM template from cloud image
-│   ├── vm-clone.sh               # Clone template to production VM
-│   ├── vm-publish.sh             # Attach public IP to VM
-│   ├── vm-optimize.sh            # Production VM tuning
-│   ├── vm-audit.sh               # System audit + benchmarks
-│   └── netbench.sh               # Network benchmarks
+├── scripts/                         # One-time setup & deployment
+│   ├── pve-install-hetzner.sh       #   Installer (curl-friendly)
+│   ├── pve-harden.sh                #   Security hardening (14 steps)
+│   ├── pve-network.sh               #   NAT bridge setup
+│   ├── pve-tunnel.sh                #   Cloudflare Tunnel setup
+│   ├── pve-config-archive.sh        #   Config backup
+│   ├── pve-config-sanitize.sh       #   Sanitize for external analysis
+│   ├── vm-template.sh               #   Create VM template from cloud image
+│   ├── vm-clone.sh                  #   Clone template to production VM
+│   ├── vm-publish.sh                #   Attach public IP to VM
+│   ├── vm-optimize.sh               #   Production VM tuning
+│   ├── vm-audit.sh                  #   System audit + benchmarks
+│   └── netbench.sh                  #   Network benchmarks
+├── ops/                             # Day-to-day operational scripts
+│   ├── pve-snap.sh                  #   Snapshot management + retention
+│   └── srv-sync.sh                  #   Inter-server file sync
+├── cron.d/                          # Cron job templates
+│   ├── pve-snapshots                #   Nightly VM snapshots
+│   ├── srv-sync-fsn                 #   FSN sync schedule
+│   └── srv-sync-hel                 #   HEL sync schedule
+├── guest-utils/                     # Scripts to run inside VMs
+│   ├── create-users.sh
+│   └── docker-setup.sh
 ├── configs/
-│   └── example.toml              # Config template
+│   └── example.toml                 # Config template
 ├── .gitignore
 ├── LICENSE
 └── README.md

@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Nightly VM snapshots — 03:00 UTC, 7 day retention
+# Edit VMID per server: 101 on FSN, 201 on HEL
+0 3 * * * root /opt/upstaff-ops/bin/pve-snap.sh VMID 7 2>&1 | logger -t pve-snap
